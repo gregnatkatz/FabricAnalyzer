@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { loginPopup, logout, getAccessToken } from '../auth/msalConfig';
-import { loadSampleDataset, getWorkspaces, getModels, collectData } from '../api/proxy';
+import { loadSampleDataset, getWorkspaces, getModels, collectData, getScenarios, loadScenario } from '../api/proxy';
 
 export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [workspaceId, setWorkspaceId] = useState('');
@@ -9,6 +9,9 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [scenarios, setScenarios] = useState([]);
+  const [showScenarios, setShowScenarios] = useState(false);
+  const [selectedScenario, setSelectedScenario] = useState(null);
 
   const handleSignIn = async () => {
     try {
@@ -55,6 +58,48 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
       onNavigate('traces');
     } catch (err) {
       setError(`Failed to load sample: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleShowScenarios = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      const result = await getScenarios();
+      setScenarios(result.scenarios || []);
+      setShowScenarios(true);
+    } catch (err) {
+      setError(`Failed to load scenarios: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLoadScenario = async (scenarioId) => {
+    try {
+      setLoading(true);
+      setError('');
+      const scenario = scenarios.find(s => s.id === scenarioId);
+      setStatus(`Loading scenario ${scenarioId}: ${scenario?.name || ''}...`);
+      const result = await loadScenario(scenarioId);
+      updateSession({
+        connected: true,
+        sampleMode: true,
+        sessionId: result.sessionId,
+        dbPath: result.dbPath,
+        modelName: result.modelName,
+        domain: result.domain,
+        traces: result.traces || [],
+        collectionComplete: true,
+        scenarioId: result.scenarioId,
+        scenarioName: result.scenarioName,
+      });
+      setStatus(`Loaded: ${result.scenarioName}`);
+      onNavigate('traces');
+    } catch (err) {
+      setError(`Failed to load scenario: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -109,19 +154,94 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
           Connect to Fabric Workspace
         </h2>
 
-        {/* Sample Dataset Button */}
+        {/* Sample Dataset Buttons */}
         <div style={{ marginBottom: 32, paddingBottom: 24, borderBottom: '1px solid var(--border)' }}>
-          <button
-            className="btn-primary"
-            onClick={handleLoadSample}
-            disabled={loading}
-            style={{ width: '100%', justifyContent: 'center' }}
-          >
-            {loading ? 'Loading...' : 'Sample Dataset'}
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn-primary"
+              onClick={handleLoadSample}
+              disabled={loading}
+              style={{ flex: 1, justifyContent: 'center' }}
+            >
+              {loading && !showScenarios ? 'Loading...' : 'Sample Dataset'}
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={handleShowScenarios}
+              disabled={loading}
+              style={{ flex: 1, justifyContent: 'center' }}
+            >
+              {loading && showScenarios ? 'Loading...' : `Test Scenarios (20)`}
+            </button>
+          </div>
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
-            Load pre-built LOS sample data — no Fabric connection required
+            Load pre-built sample data — no Fabric connection required
           </p>
+
+          {/* Scenario Picker */}
+          {showScenarios && scenarios.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{
+                maxHeight: 360,
+                overflowY: 'auto',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                background: 'rgba(0,0,0,0.15)',
+              }}>
+                {scenarios.map(s => {
+                  const severityColor = {
+                    CLINICAL_INPATIENT: '#ef4444',
+                    CLINICAL_QUALITY: '#f97316',
+                    REVENUE_CYCLE: '#22c55e',
+                    WORKFORCE: '#3b82f6',
+                    SUPPLY_CHAIN: '#a855f7',
+                    PATIENT_EXPERIENCE: '#ec4899',
+                    OPERATIONAL: '#eab308',
+                    FINANCIAL: '#06b6d4',
+                  }[s.domain] || '#888';
+
+                  return (
+                    <div
+                      key={s.id}
+                      onClick={() => !loading && handleLoadScenario(s.id)}
+                      style={{
+                        padding: '10px 14px',
+                        borderBottom: '1px solid var(--border)',
+                        cursor: loading ? 'wait' : 'pointer',
+                        transition: 'background 0.15s',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      <span style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: '#000',
+                        background: severityColor,
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        minWidth: 28,
+                        textAlign: 'center',
+                      }}>
+                        {s.id}
+                      </span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>
+                          {s.name}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                          {s.domain} — {(s.key_issues || []).slice(0, 3).join(', ')}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* OAuth Sign-In */}

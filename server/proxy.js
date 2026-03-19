@@ -3,7 +3,7 @@ import cors from 'cors';
 import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import { spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -185,6 +185,79 @@ db.close()
         modelName: data.model?.name || 'LOS Sample Model',
         domain: 'CLINICAL_INPATIENT',
         traces: data.traces || [],
+      });
+    } catch (e) {
+      res.status(500).json({ error: `Parse error: ${e.message}` });
+    }
+  });
+});
+
+// List available test scenarios
+app.get('/api/scenarios', (req, res) => {
+  const scenariosDir = join(__dirname, '..', 'sample_dataset', 'scenarios');
+  const metaPath = join(scenariosDir, 'scenarios_meta.json');
+  if (!existsSync(metaPath)) {
+    return res.json({ scenarios: [] });
+  }
+  try {
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+    res.json({ scenarios: meta });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Load a specific test scenario
+app.post('/api/sample/scenario', (req, res) => {
+  const { scenarioId } = req.body;
+  if (!scenarioId) return res.status(400).json({ error: 'scenarioId required' });
+
+  const dbPath = join(__dirname, '..', 'sample_dataset', 'scenarios', `scenario_${String(scenarioId).padStart(2, '0')}.db`);
+  if (!existsSync(dbPath)) {
+    return res.status(404).json({ error: `scenario_${String(scenarioId).padStart(2, '0')}.db not found` });
+  }
+
+  const sessionId = `scenario_${scenarioId}_${Date.now()}`;
+  const metaPath = join(__dirname, '..', 'sample_dataset', 'scenarios', 'scenarios_meta.json');
+  let scenarioMeta = {};
+  if (existsSync(metaPath)) {
+    const allMeta = JSON.parse(readFileSync(metaPath, 'utf8'));
+    scenarioMeta = allMeta.find(s => s.id === Number(scenarioId)) || {};
+  }
+
+  const pythonScript = `
+import sqlite3, json, sys
+db = sqlite3.connect('${dbPath}')
+db.row_factory = sqlite3.Row
+traces = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
+config = dict(db.execute('SELECT * FROM agent_config LIMIT 1').fetchone() or {})
+model = dict(db.execute('SELECT * FROM models LIMIT 1').fetchone() or {})
+print(json.dumps({'traces': traces, 'config': config, 'model': model}))
+db.close()
+`;
+
+  const py = spawn(PYTHON_PATH, ['-c', pythonScript]);
+  let output = '';
+  let stderr = '';
+  py.stdout.on('data', d => output += d);
+  py.stderr.on('data', d => stderr += d);
+  py.on('close', (code) => {
+    if (code !== 0) {
+      console.error('Scenario load error:', stderr);
+      return res.status(500).json({ error: stderr || 'Failed to load scenario' });
+    }
+    try {
+      const data = JSON.parse(output);
+      res.json({
+        sessionId,
+        dbPath,
+        modelName: data.model?.name || scenarioMeta.name || `Scenario ${scenarioId}`,
+        domain: scenarioMeta.domain || 'auto',
+        traces: data.traces || [],
+        scenarioId: Number(scenarioId),
+        scenarioName: scenarioMeta.name || `Scenario ${scenarioId}`,
+        scenarioDescription: scenarioMeta.description || '',
+        keyIssues: scenarioMeta.key_issues || [],
       });
     } catch (e) {
       res.status(500).json({ error: `Parse error: ${e.message}` });

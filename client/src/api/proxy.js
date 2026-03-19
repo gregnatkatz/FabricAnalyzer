@@ -38,6 +38,17 @@ export async function loadSampleDataset() {
   return request('/sample', { method: 'POST' });
 }
 
+export async function getScenarios() {
+  return request('/scenarios');
+}
+
+export async function loadScenario(scenarioId) {
+  return request('/sample/scenario', {
+    method: 'POST',
+    body: JSON.stringify({ scenarioId }),
+  });
+}
+
 export async function getWorkspaces(accessToken) {
   return request('/fabric/workspaces', {
     headers: { Authorization: `Bearer ${accessToken}` },
