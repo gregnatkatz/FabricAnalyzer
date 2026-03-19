@@ -155,7 +155,7 @@ app.post('/api/sample', (req, res) => {
 
   const sessionId = `sample_${Date.now()}`;
 
-  // Read traces from sample.db
+  // Read traces + CU metrics from sample.db
   const pythonScript = `
 import sqlite3, json, sys
 db = sqlite3.connect('${sampleDbPath}')
@@ -163,7 +163,11 @@ db.row_factory = sqlite3.Row
 traces = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
 config = dict(db.execute('SELECT * FROM agent_config LIMIT 1').fetchone() or {})
 model = dict(db.execute('SELECT * FROM models LIMIT 1').fetchone() or {})
-print(json.dumps({'traces': traces, 'config': config, 'model': model}))
+try:
+    cu = dict(db.execute('SELECT * FROM cu_metrics LIMIT 1').fetchone() or {})
+except:
+    cu = {}
+print(json.dumps({'traces': traces, 'config': config, 'model': model, 'cuMetrics': cu}))
 db.close()
 `;
 
@@ -185,6 +189,7 @@ db.close()
         modelName: data.model?.name || 'LOS Sample Model',
         domain: 'CLINICAL_INPATIENT',
         traces: data.traces || [],
+        cuMetrics: data.cuMetrics || null,
       });
     } catch (e) {
       res.status(500).json({ error: `Parse error: ${e.message}` });
@@ -232,7 +237,11 @@ db.row_factory = sqlite3.Row
 traces = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
 config = dict(db.execute('SELECT * FROM agent_config LIMIT 1').fetchone() or {})
 model = dict(db.execute('SELECT * FROM models LIMIT 1').fetchone() or {})
-print(json.dumps({'traces': traces, 'config': config, 'model': model}))
+try:
+    cu = dict(db.execute('SELECT * FROM cu_metrics LIMIT 1').fetchone() or {})
+except:
+    cu = {}
+print(json.dumps({'traces': traces, 'config': config, 'model': model, 'cuMetrics': cu}))
 db.close()
 `;
 
@@ -254,6 +263,7 @@ db.close()
         modelName: data.model?.name || scenarioMeta.name || `Scenario ${scenarioId}`,
         domain: scenarioMeta.domain || 'auto',
         traces: data.traces || [],
+        cuMetrics: data.cuMetrics || null,
         scenarioId: Number(scenarioId),
         scenarioName: scenarioMeta.name || `Scenario ${scenarioId}`,
         scenarioDescription: scenarioMeta.description || '',

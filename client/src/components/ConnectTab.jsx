@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { loginPopup, logout, getAccessToken } from '../auth/msalConfig';
+import { loginPopup, logout, getAccessToken, setClientConfig, getClientConfig } from '../auth/msalConfig';
 import { loadSampleDataset, getWorkspaces, getModels, collectData, getScenarios, loadScenario, healthCheck } from '../api/proxy';
 
 // Setup checklist steps for Fabric connection
@@ -67,6 +67,9 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [showChecklist, setShowChecklist] = useState(false);
   const [checkedSteps, setCheckedSteps] = useState({});
   const [testResults, setTestResults] = useState({});
+  const [quickClientId, setQuickClientId] = useState(getClientConfig().clientId);
+  const [quickTenantId, setQuickTenantId] = useState(getClientConfig().tenantId === 'common' ? '' : getClientConfig().tenantId);
+  const [configSaved, setConfigSaved] = useState(false);
 
   const toggleStep = (stepId) => {
     setCheckedSteps(prev => ({ ...prev, [stepId]: !prev[stepId] }));
@@ -144,6 +147,7 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
         modelName: result.modelName || 'LOS Sample Model',
         domain: result.domain || 'CLINICAL_INPATIENT',
         traces: result.traces || [],
+        cuMetrics: result.cuMetrics || null,
         collectionComplete: true,
       });
       setStatus('Sample dataset loaded successfully');
@@ -184,6 +188,7 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
         modelName: result.modelName,
         domain: result.domain,
         traces: result.traces || [],
+        cuMetrics: result.cuMetrics || null,
         collectionComplete: true,
         scenarioId: result.scenarioId,
         scenarioName: result.scenarioName,
@@ -477,16 +482,117 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
           )}
         </div>
 
-        {/* OAuth Sign-In */}
+        {/* Quick Setup — Fabric Connection */}
         <div style={{ marginBottom: 24 }}>
+          <div style={{
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            background: 'rgba(0,0,0,0.15)',
+            padding: 16,
+            marginBottom: 16,
+          }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: 'var(--teal)' }}>
+              Quick Setup — Connect to Fabric
+            </h3>
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>
+              Paste your App Registration Client ID to connect. No config files to edit.
+              <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/CreateApplicationBlade"
+                target="_blank" rel="noopener noreferrer"
+                style={{ color: 'var(--cyan)', marginLeft: 4 }}>
+                Create App Registration &#8599;
+              </a>
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+                  Application (Client) ID *
+                </label>
+                <input
+                  type="text"
+                  value={quickClientId}
+                  onChange={e => { setQuickClientId(e.target.value); setConfigSaved(false); }}
+                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    color: 'var(--text)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 12,
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+                  Tenant ID <span style={{ opacity: 0.5 }}>(optional — defaults to multi-tenant)</span>
+                </label>
+                <input
+                  type="text"
+                  value={quickTenantId}
+                  onChange={e => { setQuickTenantId(e.target.value); setConfigSaved(false); }}
+                  placeholder="common (multi-tenant)"
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    color: 'var(--text)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 12,
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button
+                  onClick={() => {
+                    if (!quickClientId.trim()) return;
+                    setClientConfig(quickClientId.trim(), quickTenantId.trim() || 'common');
+                    setConfigSaved(true);
+                    setCheckedSteps(prev => ({ ...prev, client_config: true, azure_app: true }));
+                  }}
+                  disabled={!quickClientId.trim()}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: 6,
+                    border: '1px solid var(--border)',
+                    background: configSaved ? 'rgba(34,197,94,0.15)' : 'var(--teal)',
+                    color: configSaved ? 'var(--green)' : '#000',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: quickClientId.trim() ? 'pointer' : 'not-allowed',
+                    opacity: quickClientId.trim() ? 1 : 0.5,
+                  }}
+                >
+                  {configSaved ? 'Saved' : 'Save & Configure'}
+                </button>
+                {configSaved && (
+                  <span style={{ fontSize: 11, color: 'var(--green)' }}>
+                    Ready — click Sign In below
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
           {!session.connected ? (
             <button
               className="btn-secondary"
               onClick={handleSignIn}
-              disabled={loading}
-              style={{ width: '100%', justifyContent: 'center' }}
+              disabled={loading || !quickClientId.trim()}
+              style={{
+                width: '100%',
+                justifyContent: 'center',
+                opacity: quickClientId.trim() ? 1 : 0.5,
+              }}
             >
-              Connect to Fabric (OAuth)
+              {!quickClientId.trim() ? 'Enter Client ID above to Sign In' : 'Connect to Fabric (OAuth)'}  
             </button>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

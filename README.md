@@ -7,31 +7,31 @@ A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces
 ### Connect Tab
 Connect to a Fabric workspace via OAuth or load the built-in sample dataset for immediate analysis.
 
-![Connect Tab](https://app.devin.ai/attachments/375ec86b-4db6-4e26-8cd5-a0657f5305ce/01-connect-tab.png)
+![Connect Tab](docs/screenshots/01-connect-tab.png)
 
 ### Traces Tab
 View all collected traces with latency breakdowns (Schema/DAX/Execution), retry counts, and status indicators.
 
-![Traces Tab](https://app.devin.ai/attachments/bcbcbeb8-960b-44f9-a3e5-2f63162fc0d0/02-traces-tab.png)
+![Traces Tab](docs/screenshots/02-traces-tab.png)
 
 ### Workflow Tab — 9-Agent Pipeline with Model Selection
 Run the full 9-agent analysis pipeline with per-agent model selection. Choose from GPT-5.4 Pro, Grok 4.1 Fast Reasoning, DeepSeek V3.2 Speciale, or Phi-4 Reasoning for each agent.
 
-![Workflow Tab](https://app.devin.ai/attachments/e01b0e7e-5aee-4c1d-8a3c-679628afa161/03-workflow-tab.png)
+![Workflow Tab](docs/screenshots/03-workflow-tab.png)
 
 ### Simulation Tab — Math Model
 Pure client-side JavaScript math model updates instantly (<100ms) as you toggle fixes. Shows projected average latency, outlier latency, and pass rate.
 
-![Simulation Tab - Baseline](https://app.devin.ai/attachments/64e9c8e2-aaf7-4b68-ad2b-b6543aa4cab5/05-simulation-tab.png)
+![Simulation Tab - Baseline](docs/screenshots/05-simulation-tab.png)
 
 Toggle fixes to see instant impact projections — here "Trim Instructions" and "Add Verified Answers" reduce avg latency from 26.6s to 19.9s (-25%).
 
-![Simulation Tab - With Fixes](https://app.devin.ai/attachments/77f6b5e0-50a6-4de1-988c-7858f5f3e869/05b-simulation-with-fixes.png)
+![Simulation Tab - With Fixes](docs/screenshots/05b-simulation-with-fixes.png)
 
 ### Validation Tab
 Select fixes to validate with a 4-phase validation pipeline: baseline battery, fix application, post-fix battery, and delta + resolution analysis.
 
-![Validation Tab](https://app.devin.ai/attachments/cb6beb12-e4f3-4f12-8eb5-04991c8328a3/06-validation-tab.png)
+![Validation Tab](docs/screenshots/06-validation-tab.png)
 
 ## Architecture
 
@@ -53,8 +53,8 @@ Select fixes to validate with a 4-phase validation pipeline: baseline battery, f
                         │ subprocess spawn
 ┌───────────────────────▼─────────────────────────────────┐
 │              Python Backend                               │
-│  agents/ — 9-agent pipeline (29 deterministic rules)      │
-│  knowledge/ — ChromaDB RAG (40+ knowledge chunks)         │
+│  agents/ — 9-agent pipeline (29 deterministic + 500 RAG)   │
+│  knowledge/ — ChromaDB RAG (540 chunks: 40 docs + 500 issues) │
 │  synthetic/ — Monte Carlo, validation, query simulator     │
 │  collector/ — Fabric API collector, question battery       │
 │  sample_dataset/ — 25 known issues, acceptance tests       │
@@ -133,7 +133,39 @@ npm run dev
 4. Run analysis pipeline with selected models
 5. Validate fixes against real Fabric Data Agent
 
-## 29 Deterministic Rules
+## 500 Latency Issue Catalog
+
+The tool includes a comprehensive catalog of **500 known latency issues** across 25 categories, embedded in ChromaDB for LLM RAG grounding:
+
+| Category | Count | Examples |
+|----------|-------|----------|
+| Schema Design | 20 | Star schema violations, orphan tables, circular paths |
+| Schema Scope | 20 | Scope bloat, unused dimensions, stale scope |
+| Instruction Tuning | 20 | Char limit exceeded, missing routing, conflicting rules |
+| Verified Answers | 20 | Zero VAs, missing TOPN, syntax errors, hardcoded dates |
+| Routing Rules | 20 | Wrong table routing, ambiguous keywords, missing routing |
+| DAX Generation | 20 | Generation dominant, timeout, skipped VA match |
+| DAX Patterns | 20 | Missing TOPN, CROSSJOIN, iterator on large table |
+| DAX Antipatterns | 20 | NL2DAX contamination, implicit measures, circular refs |
+| Execution Engine | 20 | Outlier traces, memory spill, cold cache penalty |
+| Direct Lake | 20 | V-Order missing, DirectQuery fallback, framing risk |
+| VertiPaq | 20 | High cardinality, wide strings, GUID columns |
+| CU/Capacity | 20 | Throttling, burst limits, cross-region latency |
+| Retry Patterns | 20 | Cascading retries, wrong table retries, retry rate |
+| Measure Design | 20 | Duplicates, missing descriptions, hardcoded filters |
+| Relationship Model | 20 | Bi-directional, M2M, snowflake chains, role-playing |
+| Column Design | 20 | Ambiguous names, type mismatches, encoding issues |
+| Governance | 20 | PHI exposure, RLS gaps, audit logging |
+| Question Battery | 20 | Missing test categories, schema adaptation |
+| NL Parsing | 20 | Ambiguous pronouns, date parsing, domain jargon |
+| Response Synthesis | 20 | Verbose responses, missing units, timeout |
+| Knowledge Sources | 20 | Outdated docs, missing glossary, chunking issues |
+| Workspace Config | 20 | Shared capacity, wrong region, refresh conflicts |
+| Agent Config | 20 | Empty setup, missing SLA, no feedback loop |
+| Monitoring | 20 | No alerting, no baseline, no trend analysis |
+| Cross-Agent | 20 | Inconsistent configs, routing confusion, drift |
+
+## 29 Deterministic Rules (Pre-Checks)
 
 ### Schema (11 rules)
 - Instruction char limit exceeded (>4800) — CRITICAL
