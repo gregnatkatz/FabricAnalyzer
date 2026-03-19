@@ -1,0 +1,437 @@
+"""Main pipeline orchestrator — runs all 9 agents in order.
+Called by server/proxy.js via subprocess.
+
+Usage: python pipeline.py --db <path> --session-id <id> --agent <agent_id|all> ...
+"""
+import argparse
+import json
+import sqlite3
+import sys
+import os
+import traceback
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from agents import domain_intelligence, adversarial_probe, schema_checks, dax_checks, execution_checks
+from agents.prompts import PROMPTS, AGENT_CHROMA_QUERIES
+
+try:
+    import chromadb
+    CHROMA_AVAILABLE = True
+except ImportError:
+    CHROMA_AVAILABLE = False
+
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+
+
+def query_chromadb(chromadb_path, collection_name, query_text, n_results=5):
+    """Query ChromaDB for grounding context."""
+    if not CHROMA_AVAILABLE:
+        return []
+    try:
+        client = chromadb.PersistentClient(path=chromadb_path)
+        collection = client.get_collection(collection_name)
+        results = collection.query(query_texts=[query_text], n_results=n_results)
+        return results.get('documents', [[]])[0]
+    except Exception:
+        return []
+
+
+def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200):
+    """Call LLM via Express proxy."""
+    if not REQUESTS_AVAILABLE:
+        return None
+    try:
+        resp = requests.post(
+            f'{proxy_url}/api/agent',
+            json={'system': system_prompt, 'userMsg': user_msg, 'maxTokens': max_tokens},
+            timeout=60,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get('content', '')
+        else:
+            print(f'LLM error: {resp.status_code} {resp.text}', file=sys.stderr)
+            return None
+    except Exception as e:
+        print(f'LLM call failed: {e}', file=sys.stderr)
+        return None
+
+
+def parse_llm_json(content):
+    """Parse JSON from LLM response, stripping markdown code blocks."""
+    if not content:
+        return {}
+    # Strip ```json ... ``` wrapper
+    content = content.strip()
+    if content.startswith('```json'):
+        content = content[7:]
+    elif content.startswith('```'):
+        content = content[3:]
+    if content.endswith('```'):
+        content = content[:-3]
+    content = content.strip()
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        # Try to find JSON object in the content
+        start = content.find('{')
+        end = content.rfind('}')
+        if start >= 0 and end > start:
+            try:
+                return json.loads(content[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+    return {}
+
+
+def merge_findings(deterministic, llm_findings):
+    """Merge findings — deterministic take precedence."""
+    det_issues = {f['issue'][:50] for f in deterministic}
+    merged = list(deterministic)
+    for f in llm_findings:
+        if f.get('issue', '')[:50] not in det_issues:
+            merged.append(f)
+    return merged
+
+
+def embed_findings(chromadb_path, findings, session_id):
+    """Embed findings into ChromaDB past_findings collection."""
+    if not CHROMA_AVAILABLE or not findings:
+        return
+    try:
+        client = chromadb.PersistentClient(path=chromadb_path)
+        collection = client.get_or_create_collection('past_findings')
+        for i, f in enumerate(findings):
+            doc = json.dumps(f)
+            collection.add(
+                documents=[doc],
+                ids=[f'{session_id}_{f.get("agent_id", "unknown")}_{i}'],
+                metadatas=[{'session_id': session_id, 'agent_id': f.get('agent_id', 'unknown')}],
+            )
+    except Exception as e:
+        print(f'ChromaDB embed error: {e}', file=sys.stderr)
+
+
+def write_findings_to_db(db_path, findings, model_id='sample', agent_id_override=None):
+    """Write findings to SQLite findings table."""
+    db = sqlite3.connect(db_path)
+    for f in findings:
+        db.execute('''
+            INSERT INTO findings (model_id, agent_id, severity, issue, evidence, impact_ms, fix, run_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ''', (
+            model_id,
+            agent_id_override or f.get('agent_id', 'unknown'),
+            f.get('severity', 'MEDIUM'),
+            f.get('issue', ''),
+            f.get('evidence', ''),
+            f.get('impact_ms', 0),
+            f.get('fix', ''),
+        ))
+    db.commit()
+    db.close()
+
+
+def load_db_context(db_path):
+    """Load all context from SQLite for LLM prompts."""
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+
+    tables = [dict(r) for r in db.execute('SELECT * FROM tables').fetchall()]
+    measures = [dict(r) for r in db.execute('SELECT * FROM measures').fetchall()]
+    columns = [dict(r) for r in db.execute('SELECT * FROM columns').fetchall()]
+    traces = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
+    config_row = db.execute('SELECT * FROM agent_config LIMIT 1').fetchone()
+    config = dict(config_row) if config_row else {}
+    cu_rows = [dict(r) for r in db.execute('SELECT * FROM cu_metrics').fetchall()]
+    model_row = db.execute('SELECT * FROM models LIMIT 1').fetchone()
+    model = dict(model_row) if model_row else {}
+
+    db.close()
+
+    return {
+        'tables': tables,
+        'measures': measures,
+        'columns': columns,
+        'traces': traces,
+        'config': config,
+        'cu_metrics': cu_rows[0] if cu_rows else {},
+        'model': model,
+        'table_names': [t['name'] for t in tables],
+        'measure_names': [m['name'] for m in measures],
+        'column_names': [c['name'] for c in columns],
+    }
+
+
+def run_agent_with_llm(agent_id, prompt_key, template_vars, proxy_url, chromadb_path, session_id):
+    """Run an LLM-backed agent: query ChromaDB, format prompt, call LLM, parse JSON."""
+    # Query ChromaDB for grounding
+    query = AGENT_CHROMA_QUERIES.get(agent_id, '')
+    grounding = query_chromadb(chromadb_path, 'microsoft_docs', query, n_results=5)
+    template_vars['grounding_context'] = '\n'.join(grounding) if grounding else '(No grounding context available)'
+
+    # Past findings
+    past = query_chromadb(chromadb_path, 'past_findings', query, n_results=3)
+    template_vars['past_findings'] = '\n'.join(past) if past else '(No past findings)'
+
+    # Format prompt
+    prompt_template = PROMPTS.get(prompt_key, '')
+    try:
+        system_prompt = prompt_template.format(**template_vars)
+    except KeyError as e:
+        system_prompt = prompt_template  # Use as-is if missing keys
+
+    # Call LLM
+    user_msg = f'Analyze and respond with valid JSON only. Agent: {agent_id}'
+    raw = call_llm(proxy_url, system_prompt, user_msg, max_tokens=2000)
+    parsed = parse_llm_json(raw)
+
+    return parsed.get('findings', []), parsed
+
+
+def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto',
+                 proxy_url='http://localhost:3001', chromadb_path='./chroma_db',
+                 sample_mode=False):
+    """Run the full 9-agent pipeline."""
+    all_findings = []
+    results = {}
+    ctx = load_db_context(db_path)
+
+    # Agent 1: Domain Intelligence
+    if agent_filter in ('all', 'domain_intelligence'):
+        print('[pipeline] Running Agent 1: Domain Intelligence', file=sys.stderr)
+        di_result = domain_intelligence.run(db_path)
+        all_findings.extend(di_result.get('findings', []))
+        results['domain_intelligence'] = di_result
+
+        # LLM enhancement for hypotheses
+        if proxy_url and agent_filter == 'all':
+            template_vars = {
+                'table_names': ', '.join(ctx['table_names']),
+                'measure_names': ', '.join(ctx['measure_names']),
+                'column_names': ', '.join(ctx['column_names'][:30]),
+                'instruction_excerpt': str(ctx['config'].get('instruction_text', ''))[:500],
+                'domain': di_result['domain'],
+                'config_issues': '; '.join(di_result.get('config_issues', [])),
+            }
+            llm_findings, llm_data = run_agent_with_llm(
+                'domain_intelligence', 'domain_intelligence', template_vars,
+                proxy_url, chromadb_path, session_id,
+            )
+            # Update probe questions with LLM-generated ones if available
+            if llm_data.get('probe_questions'):
+                di_result['probe_questions'] = (
+                    di_result['probe_questions'] + llm_data['probe_questions'][:30]
+                )
+            results['domain_intelligence'] = di_result
+
+    domain = results.get('domain_intelligence', {}).get('domain', domain_override)
+    if domain == 'auto':
+        domain = 'OPERATIONAL'
+
+    # Agent 2: Adversarial Probe
+    if agent_filter in ('all', 'adversarial_probe'):
+        print('[pipeline] Running Agent 2: Adversarial Probe', file=sys.stderr)
+        probe_questions = results.get('domain_intelligence', {}).get('probe_questions', [])
+        ap_result = adversarial_probe.run(db_path, probe_questions)
+        all_findings.extend(ap_result.get('findings', []))
+        results['adversarial_probe'] = ap_result
+
+    behavioral_summary = results.get('adversarial_probe', {}).get('behavioral_summary', '')
+    behavioral_evidence = json.dumps(results.get('adversarial_probe', {}).get('behavioral_profile', {}))
+
+    # Agent 3: Schema (deterministic + LLM)
+    if agent_filter in ('all', 'schema'):
+        print('[pipeline] Running Agent 3: Schema', file=sys.stderr)
+        det_findings = schema_checks.run_checks(db_path)
+
+        llm_findings = []
+        if proxy_url:
+            template_vars = {
+                'domain': domain,
+                'table_names': ', '.join(ctx['table_names']),
+                'measure_names': ', '.join(ctx['measure_names']),
+                'agent_config': json.dumps(ctx['config']),
+                'deterministic_findings': json.dumps(det_findings),
+                'behavioral_evidence': behavioral_evidence,
+            }
+            llm_findings, _ = run_agent_with_llm(
+                'schema', 'schema', template_vars, proxy_url, chromadb_path, session_id,
+            )
+
+        merged = merge_findings(det_findings, llm_findings)
+        all_findings.extend(merged)
+        write_findings_to_db(db_path, merged, agent_id_override='schema')
+        results['schema'] = {'findings': merged}
+
+    # Agent 4: DAX (deterministic + LLM)
+    if agent_filter in ('all', 'dax'):
+        print('[pipeline] Running Agent 4: DAX', file=sys.stderr)
+        det_findings = dax_checks.run_checks(db_path)
+
+        llm_findings = []
+        if proxy_url:
+            traces_summary = json.dumps([{
+                'question': t.get('question', '')[:80],
+                'total_ms': t.get('total_ms', 0),
+                'retries': t.get('retries', 0),
+                'dax_generated': str(t.get('dax_generated', ''))[:200],
+            } for t in ctx['traces'][:10]])
+
+            template_vars = {
+                'domain': domain,
+                'table_names': ', '.join(ctx['table_names']),
+                'measure_names': ', '.join(ctx['measure_names']),
+                'traces_summary': traces_summary,
+                'deterministic_findings': json.dumps(det_findings),
+                'behavioral_evidence': behavioral_evidence,
+            }
+            llm_findings, _ = run_agent_with_llm(
+                'dax', 'dax', template_vars, proxy_url, chromadb_path, session_id,
+            )
+
+        merged = merge_findings(det_findings, llm_findings)
+        all_findings.extend(merged)
+        write_findings_to_db(db_path, merged, agent_id_override='dax')
+        results['dax'] = {'findings': merged}
+
+    # Agent 5: Execution (deterministic + LLM)
+    if agent_filter in ('all', 'execution'):
+        print('[pipeline] Running Agent 5: Execution', file=sys.stderr)
+        det_findings = execution_checks.run_checks(db_path)
+
+        llm_findings = []
+        if proxy_url:
+            traces_summary = json.dumps([{
+                'question': t.get('question', '')[:80],
+                'total_ms': t.get('total_ms', 0),
+                'bd_exec': t.get('bd_exec', 0),
+                'bd_nldax': t.get('bd_nldax', 0),
+                'bd_schema': t.get('bd_schema', 0),
+            } for t in ctx['traces'][:10]])
+
+            template_vars = {
+                'domain': domain,
+                'traces_summary': traces_summary,
+                'cu_metrics': json.dumps(ctx['cu_metrics']),
+                'deterministic_findings': json.dumps(det_findings),
+                'behavioral_evidence': behavioral_evidence,
+            }
+            llm_findings, _ = run_agent_with_llm(
+                'execution', 'execution', template_vars, proxy_url, chromadb_path, session_id,
+            )
+
+        merged = merge_findings(det_findings, llm_findings)
+        all_findings.extend(merged)
+        write_findings_to_db(db_path, merged, agent_id_override='execution')
+        results['execution'] = {'findings': merged}
+
+    # Agent 6: Synthesis
+    if agent_filter in ('all', 'synthesis'):
+        print('[pipeline] Running Agent 6: Synthesis', file=sys.stderr)
+        if proxy_url:
+            template_vars = {
+                'domain': domain,
+                'all_findings': json.dumps(all_findings),
+                'behavioral_summary': behavioral_summary,
+            }
+            llm_findings, synthesis_data = run_agent_with_llm(
+                'synthesis', 'synthesis', template_vars, proxy_url, chromadb_path, session_id,
+            )
+            results['synthesis'] = synthesis_data
+            all_findings.extend(llm_findings)
+        else:
+            # Fallback synthesis without LLM
+            sorted_findings = sorted(all_findings, key=lambda f: f.get('impact_ms', 0), reverse=True)
+            results['synthesis'] = {
+                'exec_summary': f'Analysis found {len(all_findings)} issues across schema, DAX, and execution.',
+                'demo_readiness': 'NOT READY' if any(f['severity'] == 'CRITICAL' for f in all_findings) else 'CONDITIONAL',
+                'root_cause_ranking': [
+                    {'rank': i + 1, 'issue': f['issue'], 'ms_contribution': f.get('impact_ms', 0)}
+                    for i, f in enumerate(sorted_findings[:10])
+                ],
+            }
+
+    # Agent 7: Monte Carlo
+    if agent_filter in ('all', 'monte_carlo'):
+        print('[pipeline] Running Agent 7: Monte Carlo', file=sys.stderr)
+        try:
+            from synthetic.monte_carlo_engine import run_monte_carlo
+            mc_result = run_monte_carlo(db_path, all_findings, behavioral_evidence)
+            results['monte_carlo'] = mc_result
+        except Exception as e:
+            print(f'Monte Carlo error: {e}', file=sys.stderr)
+            results['monte_carlo'] = {'error': str(e)}
+
+    # Agent 8: Remediation
+    if agent_filter in ('all', 'remediation'):
+        print('[pipeline] Running Agent 8: Remediation', file=sys.stderr)
+        if proxy_url:
+            ranked = sorted(all_findings, key=lambda f: f.get('impact_ms', 0), reverse=True)
+            template_vars = {
+                'domain': domain,
+                'ranked_findings': json.dumps(ranked[:15]),
+                'instruction_text': str(ctx['config'].get('instruction_text', ''))[:1000],
+                'instr_chars': ctx['config'].get('instr_chars', 0),
+                'table_names': ', '.join(ctx['table_names']),
+                'measure_names': ', '.join(ctx['measure_names']),
+                'behavioral_summary': behavioral_summary,
+            }
+            llm_findings, remediation_data = run_agent_with_llm(
+                'remediation', 'remediation', template_vars, proxy_url, chromadb_path, session_id,
+            )
+            results['remediation'] = remediation_data
+        else:
+            results['remediation'] = {'artifacts': {}}
+
+    # Embed all findings in ChromaDB
+    embed_findings(chromadb_path, all_findings, session_id)
+
+    # Final output
+    output = {
+        'domain': domain,
+        'findings': all_findings,
+        'synthesis': results.get('synthesis', {}),
+        'remediation': results.get('remediation', {}),
+        'monte_carlo': results.get('monte_carlo', {}),
+        'agent_results': {k: {'finding_count': len(v.get('findings', []))} for k, v in results.items()},
+    }
+
+    return output
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Fabric Data Agent Analysis Pipeline')
+    parser.add_argument('--db', required=True, help='Path to SQLite database')
+    parser.add_argument('--session-id', default='default', help='Session ID')
+    parser.add_argument('--agent', default='all', help='Agent to run (or "all")')
+    parser.add_argument('--domain', default='auto', help='Domain override')
+    parser.add_argument('--llm-endpoint', default='', help='LLM endpoint')
+    parser.add_argument('--llm-key', default='', help='LLM API key')
+    parser.add_argument('--llm-model', default='', help='LLM model')
+    parser.add_argument('--chromadb-path', default='./chroma_db', help='ChromaDB path')
+    parser.add_argument('--proxy-url', default='http://localhost:3001', help='Express proxy URL')
+    parser.add_argument('--sample-mode', action='store_true', help='Sample mode flag')
+
+    args = parser.parse_args()
+
+    result = run_pipeline(
+        db_path=args.db,
+        session_id=args.session_id,
+        agent_filter=args.agent,
+        domain_override=args.domain,
+        proxy_url=args.proxy_url,
+        chromadb_path=args.chromadb_path,
+        sample_mode=args.sample_mode,
+    )
+
+    print(json.dumps(result))
+
+
+if __name__ == '__main__':
+    main()

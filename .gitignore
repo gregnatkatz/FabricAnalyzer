@@ -1,0 +1,13 @@
+node_modules/
+data/
+tmp/
+chroma_db/
+*.pyc
+__pycache__/
+.env
+client/.env
+server/.env
+dist/
+*.db
+!sample_dataset/sample.db
+.DS_Store

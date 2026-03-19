@@ -1,0 +1,23 @@
+{
+  "name": "fabric-data-agent-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fabric Data Agent Latency Analyzer — diagnostic tool for Microsoft Fabric Data Agents",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently 'npm run dev:client' 'npm run dev:server'",
+    "dev:client": "cd client && npx vite",
+    "dev:server": "cd server && node proxy.js",
+    "build": "cd client && npx vite build",
+    "start": "cd server && node proxy.js",
+    "scrape": "cd chromadb_setup && python3 scraper.py && python3 embedder.py",
+    "validate": "cd validator && pytest test_pipeline.py -v",
+    "test": "cd validator && pytest -v"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}

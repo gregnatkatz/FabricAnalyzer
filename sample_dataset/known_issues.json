@@ -1,0 +1,177 @@
+[
+  {
+    "id": 1,
+    "rule": "schema_1",
+    "issue": "Instruction char limit exceeded",
+    "severity": "CRITICAL",
+    "agent": "schema"
+  },
+  {
+    "id": 2,
+    "rule": "schema_2",
+    "issue": "Instructions near limit",
+    "severity": "HIGH",
+    "agent": "schema"
+  },
+  {
+    "id": 3,
+    "rule": "schema_3",
+    "issue": "Extreme schema scope bloat (>30 tables)",
+    "severity": "CRITICAL",
+    "agent": "schema"
+  },
+  {
+    "id": 4,
+    "rule": "schema_4",
+    "issue": "High schema scope bloat (>20 tables)",
+    "severity": "HIGH",
+    "agent": "schema"
+  },
+  {
+    "id": 5,
+    "rule": "schema_5",
+    "issue": "Zero verified answers",
+    "severity": "HIGH",
+    "agent": "schema"
+  },
+  {
+    "id": 6,
+    "rule": "schema_6",
+    "issue": "Low verified answers",
+    "severity": "MEDIUM",
+    "agent": "schema"
+  },
+  {
+    "id": 7,
+    "rule": "schema_7",
+    "issue": "Exact duplicate measure name",
+    "severity": "CRITICAL",
+    "agent": "schema"
+  },
+  {
+    "id": 8,
+    "rule": "schema_8",
+    "issue": "Fuzzy duplicate measures",
+    "severity": "HIGH",
+    "agent": "schema"
+  },
+  {
+    "id": 9,
+    "rule": "schema_9",
+    "issue": "Missing table descriptions",
+    "severity": "MEDIUM",
+    "agent": "schema"
+  },
+  {
+    "id": 10,
+    "rule": "schema_10",
+    "issue": "Hidden columns detected",
+    "severity": "MEDIUM",
+    "agent": "schema"
+  },
+  {
+    "id": 11,
+    "rule": "schema_11",
+    "issue": "Schema/agent table mismatch",
+    "severity": "HIGH",
+    "agent": "schema"
+  },
+  {
+    "id": 12,
+    "rule": "dax_1",
+    "issue": "High retry count routing gap",
+    "severity": "CRITICAL",
+    "agent": "dax"
+  },
+  {
+    "id": 13,
+    "rule": "dax_2",
+    "issue": "Single retry detected",
+    "severity": "MEDIUM",
+    "agent": "dax"
+  },
+  {
+    "id": 14,
+    "rule": "dax_3",
+    "issue": "TOPN absent in cross-entity query",
+    "severity": "HIGH",
+    "agent": "dax"
+  },
+  {
+    "id": 15,
+    "rule": "dax_4",
+    "issue": "Wrong table targeted first",
+    "severity": "HIGH",
+    "agent": "dax"
+  },
+  {
+    "id": 16,
+    "rule": "dax_5",
+    "issue": "Physician data visible",
+    "severity": "CRITICAL",
+    "agent": "dax"
+  },
+  {
+    "id": 17,
+    "rule": "dax_6",
+    "issue": "DAX references unknown measure",
+    "severity": "CRITICAL",
+    "agent": "dax"
+  },
+  {
+    "id": 18,
+    "rule": "dax_7",
+    "issue": "Query returned empty results",
+    "severity": "HIGH",
+    "agent": "dax"
+  },
+  {
+    "id": 19,
+    "rule": "dax_8",
+    "issue": "Ambiguous time filter",
+    "severity": "HIGH",
+    "agent": "dax"
+  },
+  {
+    "id": 20,
+    "rule": "dax_9",
+    "issue": "NL2DAX/NL2SQL cross-contamination",
+    "severity": "HIGH",
+    "agent": "dax"
+  },
+  {
+    "id": 21,
+    "rule": "exec_1",
+    "issue": "Outlier trace >45s",
+    "severity": "CRITICAL",
+    "agent": "execution"
+  },
+  {
+    "id": 22,
+    "rule": "exec_2",
+    "issue": "Slow trace >20s",
+    "severity": "HIGH",
+    "agent": "execution"
+  },
+  {
+    "id": 23,
+    "rule": "exec_3",
+    "issue": "Execution phase dominant",
+    "severity": "HIGH",
+    "agent": "execution"
+  },
+  {
+    "id": 24,
+    "rule": "exec_4",
+    "issue": "DAX generation dominant",
+    "severity": "HIGH",
+    "agent": "execution"
+  },
+  {
+    "id": 25,
+    "rule": "exec_5",
+    "issue": "Retry-dominant latency",
+    "severity": "HIGH",
+    "agent": "execution"
+  }
+]
