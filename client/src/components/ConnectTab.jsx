@@ -1,6 +1,58 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { loginPopup, logout, getAccessToken } from '../auth/msalConfig';
-import { loadSampleDataset, getWorkspaces, getModels, collectData, getScenarios, loadScenario } from '../api/proxy';
+import { loadSampleDataset, getWorkspaces, getModels, collectData, getScenarios, loadScenario, healthCheck } from '../api/proxy';
+
+// Setup checklist steps for Fabric connection
+const SETUP_STEPS = [
+  {
+    id: 'azure_app',
+    title: 'Register Azure AD App',
+    description: 'Create an App Registration in Azure Portal with SPA redirect URI http://localhost:5173',
+    link: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/CreateApplicationBlade',
+    linkText: 'Open Azure Portal',
+    testable: false,
+  },
+  {
+    id: 'api_permissions',
+    title: 'Add API Permissions',
+    description: 'Grant Dataset.Read.All (Power BI) and Workspace.Read.All (Fabric) delegated permissions',
+    link: 'https://learn.microsoft.com/en-us/fabric/data-agents/concept-data-agents',
+    linkText: 'View Docs',
+    testable: false,
+  },
+  {
+    id: 'client_config',
+    title: 'Configure Client ID & Tenant',
+    description: 'Set clientId and tenantId in client/src/auth/msalConfig.js from your App Registration',
+    testable: false,
+  },
+  {
+    id: 'backend_running',
+    title: 'Backend Server Running',
+    description: 'Express proxy on port 3001 — handles LLM calls, Fabric API, and SQLite',
+    testable: true,
+    testAction: 'backend',
+  },
+  {
+    id: 'llm_configured',
+    title: 'LLM Endpoint Configured',
+    description: 'Azure OpenAI or compatible endpoint set in server/.env (LLM_ENDPOINT, LLM_MODEL)',
+    testable: true,
+    testAction: 'llm',
+  },
+  {
+    id: 'fabric_workspace',
+    title: 'Fabric Workspace Ready',
+    description: 'Have your Workspace ID from the Power BI URL and a Data Agent with a semantic model',
+    testable: false,
+  },
+  {
+    id: 'oauth_login',
+    title: 'Sign In via OAuth',
+    description: 'Click "Connect to Fabric (OAuth)" below to authenticate with your Microsoft account',
+    testable: false,
+  },
+];
 
 export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [workspaceId, setWorkspaceId] = useState('');
@@ -12,6 +64,46 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [scenarios, setScenarios] = useState([]);
   const [showScenarios, setShowScenarios] = useState(false);
   const [selectedScenario, setSelectedScenario] = useState(null);
+  const [showChecklist, setShowChecklist] = useState(false);
+  const [checkedSteps, setCheckedSteps] = useState({});
+  const [testResults, setTestResults] = useState({});
+
+  const toggleStep = (stepId) => {
+    setCheckedSteps(prev => ({ ...prev, [stepId]: !prev[stepId] }));
+  };
+
+  const handleTestConnection = async (testAction) => {
+    try {
+      setTestResults(prev => ({ ...prev, [testAction]: 'testing' }));
+      if (testAction === 'backend') {
+        const result = await healthCheck();
+        setTestResults(prev => ({
+          ...prev,
+          backend: result.status === 'ok' ? 'pass' : 'fail',
+        }));
+        if (result.status === 'ok') {
+          setCheckedSteps(prev => ({ ...prev, backend_running: true }));
+        }
+      } else if (testAction === 'llm') {
+        const result = await healthCheck();
+        const hasLlm = result.llm_model && !result.missing_env?.includes('LLM_ENDPOINT');
+        setTestResults(prev => ({
+          ...prev,
+          llm: hasLlm ? 'pass' : 'fail',
+          llm_detail: hasLlm
+            ? `Model: ${result.llm_model}`
+            : `Missing: ${(result.missing_env || []).join(', ') || 'LLM_API_KEY or Azure AD'}`,
+        }));
+        if (hasLlm) {
+          setCheckedSteps(prev => ({ ...prev, llm_configured: true }));
+        }
+      }
+    } catch (err) {
+      setTestResults(prev => ({ ...prev, [testAction]: 'fail', [`${testAction}_detail`]: err.message }));
+    }
+  };
+
+  const completedCount = SETUP_STEPS.filter(s => checkedSteps[s.id]).length;
 
   const handleSignIn = async () => {
     try {
@@ -153,6 +245,147 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 24 }}>
           Connect to Fabric Workspace
         </h2>
+
+        {/* Setup Checklist */}
+        <div style={{ marginBottom: 24 }}>
+          <button
+            onClick={() => setShowChecklist(!showChecklist)}
+            style={{
+              width: '100%',
+              padding: '12px 16px',
+              background: 'rgba(255,255,255,0.03)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              color: 'var(--text)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: 14,
+              fontWeight: 500,
+            }}
+          >
+            <span>Setup Checklist</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{
+                fontSize: 12,
+                color: completedCount === SETUP_STEPS.length ? 'var(--green)' : 'var(--text-muted)',
+              }}>
+                {completedCount}/{SETUP_STEPS.length} complete
+              </span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                {showChecklist ? '\u25B2' : '\u25BC'}
+              </span>
+            </span>
+          </button>
+
+          {showChecklist && (
+            <div style={{
+              border: '1px solid var(--border)',
+              borderTop: 'none',
+              borderRadius: '0 0 8px 8px',
+              background: 'rgba(0,0,0,0.15)',
+              padding: '8px 0',
+            }}>
+              {SETUP_STEPS.map((step, idx) => {
+                const isChecked = checkedSteps[step.id];
+                const testResult = testResults[step.testAction];
+                return (
+                  <div
+                    key={step.id}
+                    style={{
+                      padding: '10px 16px',
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 10,
+                      borderBottom: idx < SETUP_STEPS.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!isChecked}
+                      onChange={() => toggleStep(step.id)}
+                      style={{ marginTop: 3, cursor: 'pointer', accentColor: 'var(--green)' }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: 13,
+                        fontWeight: 500,
+                        color: isChecked ? 'var(--green)' : 'var(--text)',
+                        textDecoration: isChecked ? 'line-through' : 'none',
+                        opacity: isChecked ? 0.7 : 1,
+                      }}>
+                        <span style={{
+                          display: 'inline-block',
+                          width: 20,
+                          height: 20,
+                          lineHeight: '20px',
+                          textAlign: 'center',
+                          borderRadius: '50%',
+                          background: isChecked ? 'var(--green)' : 'rgba(255,255,255,0.08)',
+                          color: isChecked ? '#000' : 'var(--text-muted)',
+                          fontSize: 11,
+                          fontWeight: 700,
+                          marginRight: 8,
+                        }}>
+                          {idx + 1}
+                        </span>
+                        {step.title}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, paddingLeft: 28 }}>
+                        {step.description}
+                      </div>
+                      <div style={{ paddingLeft: 28, marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+                        {step.link && (
+                          <a
+                            href={step.link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ fontSize: 11, color: 'var(--cyan)', textDecoration: 'none' }}
+                          >
+                            {step.linkText || 'Learn More'} &#8599;
+                          </a>
+                        )}
+                        {step.testable && (
+                          <button
+                            onClick={() => handleTestConnection(step.testAction)}
+                            disabled={testResult === 'testing'}
+                            style={{
+                              fontSize: 11,
+                              padding: '3px 10px',
+                              borderRadius: 4,
+                              border: '1px solid var(--border)',
+                              background: testResult === 'pass' ? 'rgba(34,197,94,0.15)'
+                                : testResult === 'fail' ? 'rgba(239,68,68,0.15)'
+                                : 'rgba(255,255,255,0.05)',
+                              color: testResult === 'pass' ? 'var(--green)'
+                                : testResult === 'fail' ? 'var(--red)'
+                                : 'var(--text-muted)',
+                              cursor: testResult === 'testing' ? 'wait' : 'pointer',
+                            }}
+                          >
+                            {testResult === 'testing' ? 'Testing...'
+                              : testResult === 'pass' ? 'Connected'
+                              : testResult === 'fail' ? 'Failed — Retry'
+                              : 'Test Connection'}
+                          </button>
+                        )}
+                        {testResults[`${step.testAction}_detail`] && (
+                          <span style={{
+                            fontSize: 10,
+                            color: testResult === 'pass' ? 'var(--green)' : 'var(--red)',
+                          }}>
+                            {testResults[`${step.testAction}_detail`]}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         {/* Sample Dataset Buttons */}
         <div style={{ marginBottom: 32, paddingBottom: 24, borderBottom: '1px solid var(--border)' }}>
