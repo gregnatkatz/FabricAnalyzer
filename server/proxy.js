@@ -91,6 +91,7 @@ app.get('/api/health', (req, res) => {
     chromadb: existsSync(CHROMADB_PATH) ? 'connected' : 'missing',
     sqlite_dir: SQLITE_DIR,
     llm_model: process.env.LLM_MODEL,
+    llm_auth_mode: LLM_AUTH_MODE,
     missing_env: missing.length > 0 ? missing : undefined,
   });
 });

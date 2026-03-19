@@ -8,6 +8,7 @@ import SimulationTab from './components/SimulationTab';
 import ValidationTab from './components/ValidationTab';
 import ArtifactsTab from './components/ArtifactsTab';
 import ReportView from './report/ReportView';
+import StatusHeader from './components/StatusHeader';
 
 const TABS = [
   { id: 'connect', label: 'Connect', icon: '🔌' },
@@ -146,9 +147,10 @@ function App() {
                     : 'Connect to a workspace or load sample data'}
                 </p>
               </div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                <StatusHeader session={sessionState} />
                 {sessionState.user && (
-                  <span style={{ fontSize: 12, color: 'var(--text-muted)', marginRight: 8 }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)', marginRight: 4 }}>
                     {sessionState.user}
                   </span>
                 )}
