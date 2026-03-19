@@ -30,6 +30,11 @@ Run the full 9-agent analysis pipeline with per-agent model selection. Choose fr
 
 ![Workflow Tab](docs/screenshots/03-workflow-tab.png)
 
+### Findings Tab — Root Cause Ranking
+All issues ranked by latency impact (biggest offenders first). Each finding shows affected tables, detailed explanation, resolution steps, and severity. 15 findings across 6 CRITICAL, 7 HIGH, and 2 MEDIUM with 105.5s total impact.
+
+![Findings Tab](docs/screenshots/04-findings-tab.png)
+
 ### Simulation Tab — Math Model
 Pure client-side JavaScript math model updates instantly (<100ms) as you toggle fixes. Shows projected average latency, outlier latency, pass rate, and before/after comparison chart.
 
@@ -97,22 +102,42 @@ Select fixes to validate with a 4-phase validation pipeline: baseline battery, f
 
 ## Quick Start
 
-### Prerequisites
-- Node.js 18+
-- Python 3.10+
-- ChromaDB (`pip install chromadb`)
+### One-Click Setup (Recommended)
 
-### Setup
+The fastest way to get running — installs all dependencies, builds the knowledge base, and starts servers:
+
+```bash
+git clone https://github.com/gregnatkatz/FabricAnalyzer.git
+cd FabricAnalyzer
+chmod +x setup.sh
+./setup.sh
+```
+
+`setup.sh` handles everything:
+1. Checks Node.js 18+ and Python 3 are installed
+2. Installs npm dependencies (root, client, server)
+3. Installs Python packages (chromadb, numpy, requests)
+4. Creates `server/.env` with defaults
+5. Verifies sample dataset exists
+6. Builds ChromaDB knowledge base (538 issue patterns)
+7. Starts Express backend (:3001) and React frontend (:5173)
+
+> **Windows?** Run `setup.bat` instead — same steps, same result.
+
+### Manual Setup
 
 ```bash
 # Clone
-git clone https://github.com/gnkatz26/FabricAnalyzer.git
+git clone https://github.com/gregnatkatz/FabricAnalyzer.git
 cd FabricAnalyzer
 
 # Install dependencies
 npm install
 cd client && npm install && cd ..
 cd server && npm install && cd ..
+
+# Install Python dependencies
+pip install chromadb numpy requests
 
 # Configure environment
 cp server/.env.example server/.env
