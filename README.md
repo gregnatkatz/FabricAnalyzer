@@ -2,15 +2,26 @@
 
 A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces via OAuth, analyzes Data Agents using a 9-agent AI pipeline, generates synthetic datasets, runs Monte Carlo simulations, validates recommendations, and exports PDFs with findings and fix artifacts.
 
+## Key Features
+
+- **Automated Latency Diagnostics** — 29 deterministic rules + 500 RAG-grounded issue patterns detect root causes
+- **PDF Report Export** — Puppeteer-rendered PDF with executive summary, root cause ranking, before/after comparison, CU cost correlation, and fix recommendations
+- **ChromaDB Knowledge Base** — 538 embedded chunks (38 docs + 500 latency issues) for RAG-grounded LLM analysis
+- **Before/After Comparison** — Projected impact of all fixes with per-fix breakdown showing latency reduction percentages
+- **CU Cost Correlation** — AI CU, Query CU, Throttle Events, P50/P95 latency with estimated CU savings
+- **Adaptive Question Battery** — 30-50 domain-specific questions auto-generated from semantic model schema
+- **20 Test Scenarios** — Pre-built scenarios across 8 domains (Revenue Cycle, Supply Chain, Clinical, Financial, etc.)
+- **Per-Agent Model Selection** — Choose from 4 Azure AI models per pipeline agent
+
 ## Screenshots
 
 ### Connect Tab
-Connect to a Fabric workspace via OAuth or load the built-in sample dataset for immediate analysis.
+Connect to a Fabric workspace via OAuth or load the built-in sample dataset. Setup Checklist guides prerequisite configuration with "Test Connection" buttons.
 
 ![Connect Tab](docs/screenshots/01-connect-tab.png)
 
 ### Traces Tab
-View all collected traces with latency breakdowns (Schema/DAX/Execution), retry counts, and status indicators.
+View all collected traces with latency breakdowns (Schema/DAX/Execution), retry counts, and CU Correlation metrics (AI CU, Query CU, Throttle Events, P50/P95).
 
 ![Traces Tab](docs/screenshots/02-traces-tab.png)
 
@@ -20,7 +31,7 @@ Run the full 9-agent analysis pipeline with per-agent model selection. Choose fr
 ![Workflow Tab](docs/screenshots/03-workflow-tab.png)
 
 ### Simulation Tab — Math Model
-Pure client-side JavaScript math model updates instantly (<100ms) as you toggle fixes. Shows projected average latency, outlier latency, and pass rate.
+Pure client-side JavaScript math model updates instantly (<100ms) as you toggle fixes. Shows projected average latency, outlier latency, pass rate, and before/after comparison chart.
 
 ![Simulation Tab - Baseline](docs/screenshots/05-simulation-tab.png)
 
@@ -126,12 +137,95 @@ npm run dev
 6. Select fixes and click **Run Validation** on the Validation tab
 7. Export PDF from the Artifacts tab
 
-### Real Fabric Connection
-1. Click **Connect to Fabric (OAuth)** — signs in via browser popup
-2. Select workspace and semantic model
-3. Collector gathers metadata and runs question battery
-4. Run analysis pipeline with selected models
-5. Validate fixes against real Fabric Data Agent
+### Connecting to a Real Fabric Data Agent (Step-by-Step)
+
+Follow these steps to connect the analyzer to your Microsoft Fabric workspace and test a live Data Agent.
+
+#### Step 1: Register an Azure AD App
+
+1. Go to [Azure Portal → App registrations → New registration](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/CreateApplicationBlade)
+2. **Name**: `Fabric Analyzer` (or any name you prefer)
+3. **Supported account types**: "Accounts in any organizational directory" (Multi-tenant)
+4. **Redirect URI**: Select **Single-page application (SPA)** and enter:
+   ```
+   http://localhost:5173
+   ```
+5. Click **Register**
+6. Copy the **Application (client) ID** — you'll need this in Step 3
+
+#### Step 2: Add API Permissions
+
+1. In your app registration, go to **API permissions → Add a permission**
+2. Select **Power BI Service** (or search for it under "APIs my organization uses")
+3. Select **Delegated permissions** and add:
+   - `Dataset.Read.All` — read semantic model metadata
+   - `Workspace.Read.All` — list workspaces
+4. Click **Add permissions**
+5. **No admin consent needed** — these are delegated permissions that run as your user
+
+#### Step 3: Configure the Analyzer
+
+1. Open the app at `http://localhost:5173`
+2. On the **Connect** tab, click **Connect to Fabric (OAuth)**
+3. Paste your **Client ID** from Step 1 into the Client ID field
+4. Optionally enter your **Tenant ID** (found in Azure Portal → Azure Active Directory → Overview)
+   - Leave blank for multi-tenant (works with any Microsoft account)
+
+#### Step 4: Sign In & Select Data Agent
+
+1. Click **Sign In** — a Microsoft login popup opens
+2. Sign in with your Microsoft account that has access to the Fabric workspace
+3. Grant consent when prompted (first time only)
+4. After sign-in, the **Workspace picker** appears — select your workspace
+5. The **Semantic Model picker** loads — select the model backing your Data Agent
+6. Click **Collect** — the tool:
+   - Fetches model metadata (tables, measures, columns, relationships)
+   - Reads agent configuration (instructions, verified answers, schema scope)
+   - Runs a 30-50 question adaptive battery against the Data Agent
+   - Captures full latency traces (Schema lookup → DAX generation → Execution)
+
+#### Step 5: Run Analysis
+
+1. Go to the **Workflow** tab
+2. Select which Azure AI model to use for each agent (optional — defaults are pre-configured)
+3. Click **Run Analysis** — the 9-agent pipeline runs:
+   - Agents 1-2: Domain intelligence + adversarial probing
+   - Agents 3-5: Schema, DAX, and execution analysis (29 deterministic rules + LLM)
+   - Agent 6: Synthesis — root cause ranking and demo readiness verdict
+   - Agent 7: Monte Carlo — 500 iterations, P10/P50/P90 projections
+   - Agent 8: Remediation — paste-ready fix artifacts
+   - Agent 9: Validation — fix effectiveness assessment
+
+#### Step 6: Review Findings & Simulate Fixes
+
+1. **Findings tab** — All issues ranked by latency impact (biggest offenders first)
+   - Each finding shows: affected table/model, detailed explanation, resolution steps
+   - Click any finding to expand full details
+2. **Simulation tab** — Toggle fixes on/off to see instant latency projections
+   - Before/after comparison chart updates in real-time
+3. **Validation tab** — Select fixes and run validation to measure actual improvement
+
+#### Step 7: Export PDF Report
+
+1. Go to the **Artifacts** tab
+2. Click **Export PDF** — generates a comprehensive report with:
+   - Executive summary and demo readiness verdict
+   - Root cause ranking (biggest latency offenders first)
+   - Detailed findings with explanations and resolution steps
+   - Before/after comparison and per-fix impact breakdown
+   - CU cost correlation and estimated savings
+   - Paste-ready artifacts (optimized instructions, verified answers, schema scope)
+
+#### Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| "No workspaces found" | Ensure your account has access to at least one Fabric workspace |
+| Sign-in popup blocked | Allow popups for localhost:5173 in your browser settings |
+| "AADSTS65001" consent error | Ask your Azure AD admin to grant consent, or use a test tenant |
+| Data Agent not responding | Verify the Data Agent is deployed and the semantic model is online |
+| Slow collection (>2 min) | Normal for large models — the battery runs 30-50 questions |
+| No traces captured | Check that the Data Agent is configured with at least one semantic model |
 
 ## 500 Latency Issue Catalog
 
@@ -210,18 +304,60 @@ False positive rate: 4%
 Total deterministic findings: 26
 ```
 
+## API Endpoints
+
+### Core
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health` | GET | Health check |
+| `/api/sample` | POST | Load sample dataset (returns traces, findings, CU metrics) |
+| `/api/sample/scenario` | POST | Load specific test scenario by ID |
+| `/api/scenarios` | GET | List available test scenarios |
+| `/api/analyze` | POST | Run 9-agent analysis pipeline |
+| `/api/validate` | POST | Run 4-phase validation (SSE stream) |
+| `/api/pdf` | POST | Export PDF report via Puppeteer (accepts full session data) |
+| `/api/reset` | POST | Reset session data |
+
+### Knowledge Base (ChromaDB)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/knowledge/status` | GET | Collection counts (microsoft_docs, past_findings) |
+| `/api/knowledge/query` | POST | Semantic search: `{ query, nResults, collection }` |
+
+### Fabric Integration
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/fabric/workspaces` | GET | List Fabric workspaces (requires OAuth token) |
+| `/api/fabric/models` | GET | List semantic models in workspace |
+| `/api/fabric/collect` | POST | Collect data from Fabric Data Agent |
+
 ## Environment Variables
 
+### Core Settings
 | Variable | Required | Description |
 |----------|----------|-------------|
-| LLM_ENDPOINT | Yes | Azure OpenAI or compatible endpoint URL |
-| LLM_MODEL | Yes | Model deployment name |
-| LLM_API_KEY | No* | API key (*not needed if using Azure AD auth) |
-| CHROMADB_PATH | No | ChromaDB storage path (default: ./chroma_db) |
-| SQLITE_DIR | No | SQLite data directory (default: ./data) |
-| TMP_DIR | No | Temporary/synthetic data directory (default: ./tmp) |
-| MONTE_CARLO_N | No | Monte Carlo iterations (default: 500) |
-| PORT | No | Express proxy port (default: 3001) |
+| `LLM_ENDPOINT` | Yes | Default Azure OpenAI or compatible endpoint URL |
+| `LLM_MODEL` | Yes | Default model deployment name |
+| `LLM_API_KEY` | No* | API key (*not needed if using Azure AD auth) |
+| `CHROMADB_PATH` | No | ChromaDB storage path (default: `./chroma_db`) |
+| `SQLITE_DIR` | No | SQLite data directory (default: `./data`) |
+| `TMP_DIR` | No | Temporary/synthetic data directory (default: `./tmp`) |
+| `MONTE_CARLO_N` | No | Monte Carlo iterations (default: 500) |
+| `PORT` | No | Express proxy port (default: 3001) |
+
+### Per-Model Endpoint Routing (Optional)
+Configure separate endpoints/keys for each Azure AI model. If not set, all models use the default `LLM_ENDPOINT` and `LLM_API_KEY`.
+
+| Variable | Description |
+|----------|-------------|
+| `LLM_ENDPOINT_GPT` | Endpoint for GPT-5.4 Pro |
+| `LLM_API_KEY_GPT` | API key for GPT-5.4 Pro |
+| `LLM_ENDPOINT_GROK` | Endpoint for Grok 4.1 Fast Reasoning |
+| `LLM_API_KEY_GROK` | API key for Grok 4.1 Fast Reasoning |
+| `LLM_ENDPOINT_DEEPSEEK` | Endpoint for DeepSeek V3.2 Speciale |
+| `LLM_API_KEY_DEEPSEEK` | API key for DeepSeek V3.2 Speciale |
+| `LLM_ENDPOINT_PHI` | Endpoint for Phi-4 Reasoning |
+| `LLM_API_KEY_PHI` | API key for Phi-4 Reasoning |
 
 ## License
 
