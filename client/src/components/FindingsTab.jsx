@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { AGENTS } from '../constants/agentMeta';
 
-function FindingCard({ finding, rank }) {
+function FindingCard({ finding, rank, session }) {
   const [expanded, setExpanded] = useState(false);
   const agent = AGENTS[finding.agent_id] || {};
 
@@ -253,7 +253,7 @@ export default function FindingsTab({ session }) {
       {/* Findings list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {sorted.map((finding, i) => (
-          <FindingCard key={finding.finding_id || i} finding={finding} rank={i + 1} />
+          <FindingCard key={finding.finding_id || i} finding={finding} rank={i + 1} session={session} />
         ))}
         {sorted.length === 0 && (
           <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 32 }}>No findings match filters.</p>
