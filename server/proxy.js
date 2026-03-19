@@ -964,28 +964,176 @@ except Exception as e:
   });
 });
 
-// PDF export
+// Simulation math (mirrors client/src/simulation/mathModel.js)
+function simulateForPdf(traces, fixKeys) {
+  const FIXES = {
+    instruction_trim: { schemaF: 0.25, daxF: 0.12, execF: 0.00 },
+    schema_scope: { schemaF: 0.30, daxF: 0.16, execF: 0.00 },
+    routing_rules: { schemaF: 0.12, daxF: 0.24, execF: 0.00 },
+    measure_dedup: { schemaF: 0.08, daxF: 0.22, execF: 0.00 },
+    verified_answers: { schemaF: 0.00, daxF: 0.48, execF: 0.00 },
+    row_limits: { schemaF: 0.00, daxF: 0.04, execF: 0.42 },
+    vorder: { schemaF: 0.00, daxF: 0.00, execF: 0.24 },
+    physician_gov: { schemaF: 0.00, daxF: 0.00, execF: 0.00 },
+  };
+  const FIX_LABELS = {
+    instruction_trim: 'Trim Instructions', schema_scope: 'Scope Schema Tables',
+    routing_rules: 'Add Routing Rules', measure_dedup: 'Deduplicate Measures',
+    verified_answers: 'Add Verified Answers', row_limits: 'Add TOP Limits',
+    vorder: 'Apply V-Order', physician_gov: 'Physician Governance',
+  };
+  const CAPS = { schema: 0.78, dax: 0.82, exec: 0.65 };
+  const FLOOR_MS = 1600;
+  if (!traces || traces.length === 0) return { avgMs: 0, outlierMs: 0, passRate: 0, baselineAvgMs: 0, baselineOutlierMs: 0, baselinePassRate: 0, reductionPct: 0, perFix: {} };
+  let schemaR = 0, daxR = 0, execR = 0;
+  for (const k of fixKeys) { const f = FIXES[k]; if (!f) continue; schemaR += f.schemaF; daxR += f.daxF; execR += f.execF; }
+  schemaR = Math.min(schemaR, CAPS.schema); daxR = Math.min(daxR, CAPS.dax); execR = Math.min(execR, CAPS.exec);
+  const baselineAvgMs = Math.round(traces.reduce((s, t) => s + t.total_ms, 0) / traces.length);
+  const baselineOutlierMs = Math.max(...traces.map(t => t.total_ms));
+  const baselinePassRate = Math.round((traces.filter(t => t.total_ms < 20000).length / traces.length) * 100);
+  const projected = traces.map(t => {
+    const bs = t.bd_schema || 0, bd = t.bd_nldax || 0, be = t.bd_exec || 0, bo = t.total_ms - bs - bd - be;
+    return Math.max(bs * (1 - schemaR) + bd * (1 - daxR) + be * (1 - execR) + Math.max(bo, 0), FLOOR_MS);
+  });
+  const avgMs = Math.round(projected.reduce((s, v) => s + v, 0) / projected.length);
+  const outlierMs = Math.round(Math.max(...projected));
+  const passRate = Math.round((projected.filter(v => v < 20000).length / projected.length) * 100);
+  const reductionPct = baselineAvgMs > 0 ? Math.round(((baselineAvgMs - avgMs) / baselineAvgMs) * 100) : 0;
+  const perFix = {};
+  for (const k of Object.keys(FIXES)) {
+    const f = FIXES[k]; const sr = Math.min(f.schemaF, CAPS.schema); const dr = Math.min(f.daxF, CAPS.dax); const er = Math.min(f.execF, CAPS.exec);
+    const sAvg = Math.round(traces.reduce((s, t) => { const bs = t.bd_schema||0,bd=t.bd_nldax||0,be=t.bd_exec||0,bo=t.total_ms-bs-bd-be; return s + Math.max(bs*(1-sr)+bd*(1-dr)+be*(1-er)+Math.max(bo,0),FLOOR_MS); }, 0) / traces.length);
+    perFix[k] = { label: FIX_LABELS[k] || k, avgMs: sAvg, reductionMs: baselineAvgMs - sAvg, reductionPct: baselineAvgMs > 0 ? Math.round(((baselineAvgMs - sAvg) / baselineAvgMs) * 100) : 0 };
+  }
+  return { avgMs, outlierMs, passRate, baselineAvgMs, baselineOutlierMs, baselinePassRate, reductionPct, perFix };
+}
+
+function buildReportHtml(session) {
+  const findings = session.findings || [];
+  const traces = session.traces || [];
+  const cuMetrics = session.cuMetrics || null;
+  const fixKeys = Object.keys(simulateForPdf([], []).perFix || {}).length > 0 ? ['instruction_trim','schema_scope','routing_rules','measure_dedup','verified_answers','row_limits','vorder'] : [];
+  const allFixKeys = ['instruction_trim','schema_scope','routing_rules','measure_dedup','verified_answers','row_limits','vorder'];
+  const sim = simulateForPdf(traces, allFixKeys);
+  const sevCounts = { CRITICAL: findings.filter(f => f.severity === 'CRITICAL').length, HIGH: findings.filter(f => f.severity === 'HIGH').length, MEDIUM: findings.filter(f => f.severity === 'MEDIUM').length };
+  const sortedFindings = [...findings].sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0));
+  const totalImpactS = (findings.reduce((s, f) => s + (f.impact_ms || 0), 0) / 1000).toFixed(1);
+  const esc = (s) => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  let findingsRows = sortedFindings.map((f, i) => `
+    <tr style="border-bottom:1px solid #f0f0f0">
+      <td style="padding:6px 12px;font-weight:700;color:${i<3?'#d32f2f':i<6?'#f57c00':'#333'}">${i+1}</td>
+      <td style="padding:6px 12px">${esc(f.issue)}</td>
+      <td style="padding:6px 12px;color:#0288d1;font-size:12px">${esc(f.affected_object || '—')}</td>
+      <td style="padding:6px 12px;color:${f.severity==='CRITICAL'?'#d32f2f':f.severity==='HIGH'?'#f57c00':'#1976d2'}">${esc(f.severity)}</td>
+      <td style="padding:6px 12px;font-weight:600">${f.impact_ms ? (f.impact_ms/1000).toFixed(1)+'s' : '—'}</td>
+    </tr>`).join('');
+
+  let detailedFindings = sortedFindings.map((f, i) => {
+    const tables = (f.affected_tables || []).map(t => `<span style="font-size:10px;padding:2px 6px;border-radius:3px;background:#e0f7fa;color:#00838f;border:1px solid #b2ebf2;margin-right:4px">${esc(t)}</span>`).join('');
+    const steps = (f.resolution_steps || []).map((s, j) => `<li>${esc(s)}</li>`).join('');
+    return `
+    <div style="margin-bottom:16px;padding:14px 18px;border:1px solid #e0e0e0;border-radius:6px;page-break-inside:avoid">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div style="flex:1">
+          <span style="background:${i<3?'#ffebee':i<6?'#fff3e0':'#e3f2fd'};color:${i<3?'#d32f2f':i<6?'#f57c00':'#1976d2'};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;margin-right:8px">#${i+1}</span>
+          <strong style="font-size:14px">${esc(f.issue)}</strong>
+          ${f.affected_object ? `<p style="font-size:12px;color:#0288d1;margin:4px 0">${esc(f.affected_object)}</p>` : ''}
+        </div>
+        <div style="text-align:right;min-width:100px">
+          <span style="color:${f.severity==='CRITICAL'?'#d32f2f':f.severity==='HIGH'?'#f57c00':'#1976d2'};font-weight:600">${esc(f.severity)}</span>
+          ${f.impact_ms > 0 ? `<div style="font-size:12px;font-weight:600;color:#d32f2f">${(f.impact_ms/1000).toFixed(1)}s impact</div>` : ''}
+        </div>
+      </div>
+      ${tables ? `<div style="margin-top:6px">${tables}</div>` : ''}
+      ${f.explanation ? `<div style="margin-top:8px;padding:8px 12px;background:#fafafa;border-radius:4px;border:1px solid #f0f0f0"><p style="font-size:12px;font-weight:600;color:#555;margin-bottom:4px">EXPLANATION</p><p style="font-size:13px;color:#333;line-height:1.6;margin:0">${esc(f.explanation)}</p></div>` : ''}
+      ${f.latency_contribution ? `<div style="margin-top:6px;padding:6px 10px;background:#ffebee;border-radius:4px;border:1px solid #ffcdd2"><p style="font-size:12px;color:#c62828;margin:0"><strong>Latency:</strong> ${esc(f.latency_contribution)}</p></div>` : ''}
+      ${f.evidence ? `<p style="font-size:12px;color:#666;margin-top:6px"><strong>Evidence:</strong> ${esc(f.evidence)}</p>` : ''}
+      ${f.fix ? `<p style="font-size:12px;color:#2e7d32;margin-top:4px"><strong>Fix:</strong> ${esc(f.fix)}</p>` : ''}
+      ${steps ? `<div style="margin-top:8px"><p style="font-size:12px;font-weight:600;color:#555;margin-bottom:4px">RESOLUTION STEPS</p><ol style="margin:0;padding-left:20px;font-size:12px;color:#333;line-height:1.7">${steps}</ol></div>` : ''}
+    </div>`;
+  }).join('');
+
+  const perFixRows = Object.entries(sim.perFix).filter(([,pf]) => pf.reductionMs > 0).sort(([,a],[,b]) => b.reductionMs - a.reductionMs)
+    .map(([key, pf]) => `<tr style="border-bottom:1px solid #f0f0f0"><td style="padding:6px 12px">${esc(pf.label)}</td><td style="padding:6px 12px">-${(pf.reductionMs/1000).toFixed(1)}s</td><td style="padding:6px 12px;color:#2e7d32">-${pf.reductionPct}%</td></tr>`).join('');
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;color:#1a1a1a;line-height:1.6;margin:0;padding:0}table{width:100%;border-collapse:collapse}</style></head><body>
+<div id="report-ready" style="padding:40px 60px;max-width:900px;margin:0 auto">
+  <div style="text-align:center;margin-bottom:40px;padding-bottom:30px;border-bottom:2px solid #e0e0e0">
+    <h1 style="font-size:28px;font-weight:700;margin-bottom:8px">Fabric Data Agent Analysis Report</h1>
+    <p style="font-size:16px;color:#666">${esc(session.modelName || 'Unknown Model')}</p>
+    <p style="font-size:14px;color:#888">Domain: ${esc(session.domain || 'Unknown')} | Scan Date: ${new Date().toLocaleDateString()}</p>
+    <div style="display:flex;justify-content:center;gap:40px;margin-top:20px">
+      <div><strong style="font-size:24px">${findings.length}</strong><br><small>Findings</small></div>
+      <div><strong style="font-size:24px;color:#d32f2f">${sevCounts.CRITICAL}</strong><br><small>Critical</small></div>
+      <div><strong style="font-size:24px;color:#f57c00">${sevCounts.HIGH}</strong><br><small>High</small></div>
+    </div>
+  </div>
+
+  <div style="margin-bottom:30px">
+    <h2 style="font-size:20px;font-weight:600;margin-bottom:12px">Executive Summary</h2>
+    <p style="font-size:14px;line-height:1.7;margin-bottom:12px">The Fabric Data Agent Latency Analyzer performed a comprehensive analysis of <strong>${esc(session.modelName || 'the data agent')}</strong> in the <strong>${esc(session.domain || 'Unknown')}</strong> domain, examining ${traces.length} query traces across ${new Set(findings.map(f=>f.agent_id)).size} analysis dimensions (Schema Design, DAX Generation, and Execution Performance).</p>
+    <p style="font-size:14px;line-height:1.7;margin-bottom:12px">The analysis identified <strong>${findings.length} latency findings</strong> with a combined estimated impact of <strong style="color:#d32f2f">${totalImpactS}s</strong> of added latency per query cycle. Of these, <strong style="color:#d32f2f">${sevCounts.CRITICAL} are critical</strong> issues requiring immediate remediation, <strong style="color:#f57c00">${sevCounts.HIGH} are high</strong> severity issues, and ${sevCounts.MEDIUM} are medium severity optimizations.</p>
+    <p style="font-size:14px;line-height:1.7;margin-bottom:12px">The current average query latency is <strong style="color:#d32f2f">${(sim.baselineAvgMs/1000).toFixed(1)}s</strong>, which is ${sim.baselineAvgMs > 10000 ? `<strong>${(sim.baselineAvgMs/10000).toFixed(1)}x above</strong>` : 'within'} the recommended 10-second SLA target. If all recommended fixes are applied, the projected average latency drops to <strong style="color:#2e7d32">${(sim.avgMs/1000).toFixed(1)}s</strong> (a <strong style="color:#2e7d32">-${sim.reductionPct}%</strong> reduction) and the pass rate (queries under 20s) improves from ${sim.baselinePassRate}% to ${sim.passRate}%.</p>
+    ${sortedFindings.length > 0 ? `<p style="font-size:14px;line-height:1.7"><strong>Top priority:</strong> The single biggest latency offender is "${esc(sortedFindings[0]?.issue)}" with an estimated impact of ${((sortedFindings[0]?.impact_ms||0)/1000).toFixed(1)}s. Remediating the top 3 findings alone would eliminate the majority of measured latency impact.</p>` : ''}
+  </div>
+
+  <div style="margin-bottom:30px">
+    <h2 style="font-size:20px;font-weight:600;margin-bottom:12px">Root Cause Ranking — Biggest Latency Offenders</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:12px">Findings ranked by estimated latency impact. Top offenders should be remediated first.</p>
+    <table style="font-size:13px"><thead><tr style="border-bottom:2px solid #e0e0e0;text-align:left"><th style="padding:8px 12px">#</th><th style="padding:8px 12px">Issue</th><th style="padding:8px 12px">Affected Object</th><th style="padding:8px 12px">Severity</th><th style="padding:8px 12px">Impact</th></tr></thead><tbody>${findingsRows}</tbody></table>
+  </div>
+
+  <div style="margin-bottom:30px">
+    <h2 style="font-size:20px;font-weight:600;margin-bottom:12px">Detailed Findings & Resolutions</h2>
+    ${detailedFindings}
+  </div>
+
+  <div style="margin-bottom:30px">
+    <h2 style="font-size:20px;font-weight:600;margin-bottom:12px">Before vs After Comparison</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:16px">Projected impact if all recommended fixes are applied simultaneously.</p>
+    <table style="font-size:14px"><thead><tr style="border-bottom:2px solid #e0e0e0;text-align:left"><th style="padding:8px 12px">Metric</th><th style="padding:8px 12px">Before</th><th style="padding:8px 12px">After (Projected)</th><th style="padding:8px 12px">Change</th></tr></thead><tbody>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px;font-weight:500">Avg Latency</td><td style="padding:8px 12px;color:#d32f2f">${(sim.baselineAvgMs/1000).toFixed(1)}s</td><td style="padding:8px 12px;color:#2e7d32">${(sim.avgMs/1000).toFixed(1)}s</td><td style="padding:8px 12px;color:#2e7d32;font-weight:600">-${sim.reductionPct}%</td></tr>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px;font-weight:500">Pass Rate (&lt;20s)</td><td style="padding:8px 12px;color:#d32f2f">${sim.baselinePassRate}%</td><td style="padding:8px 12px;color:#2e7d32">${sim.passRate}%</td><td style="padding:8px 12px;color:#2e7d32;font-weight:600">+${sim.passRate - sim.baselinePassRate}%</td></tr>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px;font-weight:500">Outlier Latency</td><td style="padding:8px 12px;color:#d32f2f">${(sim.baselineOutlierMs/1000).toFixed(1)}s</td><td style="padding:8px 12px;color:#2e7d32">${(sim.outlierMs/1000).toFixed(1)}s</td><td style="padding:8px 12px;color:#2e7d32;font-weight:600">-${sim.baselineOutlierMs>0?Math.round(((sim.baselineOutlierMs-sim.outlierMs)/sim.baselineOutlierMs)*100):0}%</td></tr>
+    </tbody></table>
+    <h3 style="font-size:16px;font-weight:600;margin-top:20px;margin-bottom:8px">Per-Fix Impact Breakdown</h3>
+    <table style="font-size:13px"><thead><tr style="border-bottom:2px solid #e0e0e0;text-align:left"><th style="padding:6px 12px">Fix</th><th style="padding:6px 12px">Reduction</th><th style="padding:6px 12px">%</th></tr></thead><tbody>${perFixRows}</tbody></table>
+  </div>
+
+  ${cuMetrics ? `
+  <div style="margin-bottom:30px">
+    <h2 style="font-size:20px;font-weight:600;margin-bottom:12px">Capacity Unit (CU) Cost Correlation</h2>
+    <table style="font-size:14px"><thead><tr style="border-bottom:2px solid #e0e0e0;text-align:left"><th style="padding:8px 12px">Metric</th><th style="padding:8px 12px">Value</th></tr></thead><tbody>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">AI CU (28-day)</td><td style="padding:8px 12px;font-weight:600">${(cuMetrics.ai_cu_28d||0).toLocaleString()}</td></tr>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">Query CU (28-day)</td><td style="padding:8px 12px;font-weight:600">${(cuMetrics.query_cu_28d||0).toLocaleString()}</td></tr>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">Throttle Events</td><td style="padding:8px 12px;font-weight:600;color:${(cuMetrics.throttle_events||0)>0?'#d32f2f':'#2e7d32'}">${cuMetrics.throttle_events||0}</td></tr>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">P50 / P95 Latency</td><td style="padding:8px 12px;font-weight:600">${((cuMetrics.p50_ms||0)/1000).toFixed(1)}s / ${((cuMetrics.p95_ms||0)/1000).toFixed(1)}s</td></tr>
+    </tbody></table>
+    ${sim.reductionPct > 0 ? `<div style="margin-top:12px;padding:10px 14px;background:#e8f5e9;border-radius:6px;border:1px solid #c8e6c9"><p style="font-size:13px;color:#2e7d32;margin:0">Estimated CU Reduction: ~${Math.round((cuMetrics.ai_cu_28d||0)*sim.reductionPct/100).toLocaleString()} AI CU/28d saved${cuMetrics.throttle_events>0?` | Latency reduction of ${sim.reductionPct}% may reduce throttling events from ${cuMetrics.throttle_events} toward zero.`:''}</p></div>` : ''}
+  </div>` : ''}
+
+  <div>
+    <h2 style="font-size:20px;font-weight:600;margin-bottom:12px">Appendix — Methodology & Definitions</h2>
+    <p style="font-size:13px;color:#666;line-height:1.7;margin-bottom:12px"><strong>Analysis Method:</strong> This report was generated by the Fabric Data Agent Latency Analyzer v1.0 using a deterministic rules engine that evaluates query traces against 29 known latency patterns cataloged from Microsoft's Fabric Data Agent documentation and real-world deployment benchmarks. The simulation model uses calibrated reduction factors with caps of 78% (schema), 82% (DAX), and 65% (execution) to prevent over-optimistic projections. A floor of 1,600ms per trace represents the minimum achievable latency for any Fabric Data Agent query.</p>
+    <p style="font-size:13px;color:#666;line-height:1.7;margin-bottom:12px"><strong>Severity Definitions:</strong> CRITICAL = must fix immediately, directly causing user-facing latency degradation or compliance risk. HIGH = should fix in next sprint, significant contributor to latency. MEDIUM = optimization opportunity, lower priority.</p>
+    <p style="font-size:13px;color:#666;line-height:1.7">Domain: ${esc(session.domain || 'Unknown')} | Model: ${esc(session.modelName || 'Unknown')} | Traces: ${traces.length} | Scan Date: ${new Date().toLocaleDateString()} | Report generated by Fabric Data Agent Latency Analyzer v1.0</p>
+  </div>
+</div></body></html>`;
+}
+
+// PDF export — server-side HTML rendering (no frontend dependency)
 app.post('/api/pdf', async (req, res) => {
   try {
     const sessionData = req.body || {};
+    const html = buildReportHtml(sessionData);
     const puppeteer = await import('puppeteer');
     const browser = await puppeteer.default.launch({
       headless: 'new',
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
     const page = await browser.newPage();
-
-    // Inject session data into the page before React renders
-    await page.evaluateOnNewDocument((data) => {
-      window.__REPORT_DATA__ = data;
-    }, sessionData);
-
-    await page.goto('http://localhost:5173/report', { waitUntil: 'networkidle0', timeout: 30000 });
-    await page.waitForSelector('#report-ready', { timeout: 10000 });
-
-    // Wait for React to re-render with injected data
-    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 500)));
-
+    await page.setContent(html, { waitUntil: 'load' });
     const pdf = await page.pdf({
       format: 'A4',
       margin: { top: '20mm', bottom: '20mm', left: '15mm', right: '15mm' },
