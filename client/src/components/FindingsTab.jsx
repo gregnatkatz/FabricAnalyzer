@@ -105,10 +105,25 @@ function FindingCard({ finding, rank }) {
             </div>
           )}
 
+          {/* Why this matters */}
+          {finding.severity === 'CRITICAL' && (
+            <div style={{ marginBottom: 12, padding: '8px 12px', background: 'rgba(211, 47, 47, 0.04)', borderRadius: 6, border: '1px solid rgba(211, 47, 47, 0.1)' }}>
+              <strong style={{ color: 'var(--red)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Why This Matters</strong>
+              <p style={{ marginTop: 4, fontSize: 12, lineHeight: 1.6, color: 'var(--text-primary)' }}>
+                This is a <strong>CRITICAL</strong> finding that directly contributes to user-facing latency degradation.
+                {finding.impact_ms > 10000
+                  ? ` With ${(finding.impact_ms / 1000).toFixed(1)}s of estimated impact, this single issue accounts for a significant portion of the total latency budget. Users will experience noticeable delays, potential timeouts, and degraded confidence in the Data Agent's responsiveness.`
+                  : ` This issue compounds with other findings to push overall latency well above the 10-second SLA target. Left unresolved, it will continue to degrade query performance and increase Capacity Unit consumption.`
+                }
+              </p>
+            </div>
+          )}
+
           {/* Affected traces */}
           {finding.affected_traces && finding.affected_traces.length > 0 && (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              Affected traces: {finding.affected_traces.length} of total
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '6px 0', borderTop: '1px solid var(--border)', marginTop: 8 }}>
+              <strong>Scope:</strong> This finding affects {finding.affected_traces.length} of {session?.traces?.length || 'all'} analyzed
+              traces ({((finding.affected_traces.length / Math.max(session?.traces?.length || 1, 1)) * 100).toFixed(0)}% of query workload).
             </div>
           )}
         </div>
@@ -145,6 +160,14 @@ export default function FindingsTab({ session }) {
 
   const totalImpactMs = findings.reduce((sum, f) => sum + (f.impact_ms || 0), 0);
 
+  // Compute narrative summary
+  const criticalFindings = findings.filter(f => f.severity === 'CRITICAL');
+  const highFindings = findings.filter(f => f.severity === 'HIGH');
+  const schemaFindings = findings.filter(f => f.agent_id === 'schema');
+  const daxFindings = findings.filter(f => f.agent_id === 'dax');
+  const execFindings = findings.filter(f => f.agent_id === 'execution');
+  const topOffender = findings.length > 0 ? [...findings].sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0))[0] : null;
+
   if (!session.analysisComplete && findings.length === 0) {
     return (
       <div className="glass fade-in" style={{ padding: 48, textAlign: 'center' }}>
@@ -155,6 +178,34 @@ export default function FindingsTab({ session }) {
 
   return (
     <div className="fade-in">
+      {/* Narrative Analysis Summary */}
+      {findings.length > 0 && (
+        <div className="glass" style={{ padding: '20px 24px', marginBottom: 20, borderLeft: '3px solid var(--teal)' }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 10, color: 'var(--teal)' }}>Analysis Summary</h3>
+          <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 8 }}>
+            The deterministic rules engine analyzed {session.traces?.length || 0} query traces against the <strong>{session.modelName || 'semantic model'}</strong> and
+            identified <strong>{findings.length} latency findings</strong> with a combined estimated impact of <strong style={{ color: 'var(--red)' }}>{totalImpactMs >= 1000 ? `${(totalImpactMs / 1000).toFixed(1)}s` : `${totalImpactMs}ms`}</strong> of
+            added latency per query cycle. Of these, <strong style={{ color: 'var(--red)' }}>{severityCounts.CRITICAL} are critical</strong> issues requiring immediate
+            remediation, and <strong style={{ color: 'var(--amber)' }}>{severityCounts.HIGH} are high</strong> severity issues that should be addressed in the next sprint.
+          </p>
+          <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 8 }}>
+            The findings span {new Set(findings.map(f => f.agent_id)).size} analysis dimensions:
+            {schemaFindings.length > 0 && <span> <strong>{schemaFindings.length} schema issues</strong> (table scope, measures, descriptions, relationships){daxFindings.length > 0 || execFindings.length > 0 ? ',' : '.'}</span>}
+            {daxFindings.length > 0 && <span> <strong>{daxFindings.length} DAX generation issues</strong> (retries, missing TOPN guards, failed queries, governance){execFindings.length > 0 ? ',' : '.'}</span>}
+            {execFindings.length > 0 && <span> <strong>{execFindings.length} execution engine issues</strong> (outlier traces, CU throttling, dominant latency phases).</span>}
+          </p>
+          {topOffender && (
+            <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 0 }}>
+              The <strong>single biggest latency offender</strong> is <em>"{topOffender.issue}"</em> with
+              an estimated impact of <strong style={{ color: 'var(--red)' }}>{topOffender.impact_ms >= 1000 ? `${(topOffender.impact_ms / 1000).toFixed(1)}s` : `${topOffender.impact_ms}ms`}</strong>.
+              Remediating just the top 3 findings would eliminate approximately <strong style={{ color: 'var(--green)' }}>
+              {((criticalFindings.slice(0, 3).reduce((s, f) => s + (f.impact_ms || 0), 0) / Math.max(totalImpactMs, 1)) * 100).toFixed(0)}%</strong> of
+              the total measured latency impact. Click any finding below to expand its detailed explanation, evidence, recommended fix, and step-by-step resolution guide.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Summary stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 20 }}>
         {Object.entries(severityCounts).map(([sev, count]) => (

@@ -282,13 +282,20 @@ elif tables_checked > 20:
         'finding_id': f'F{fid:03d}', 'agent_id': 'schema', 'severity': 'HIGH', 'impact_ms': 3000,
         'issue': f'High schema scope bloat: {tables_checked} tables (recommended: 12)',
         'affected_object': f'Semantic Model \u2192 {model_name}',
-        'explanation': f'{tables_checked} tables in scope is above optimal. Extra tables slow schema resolution.',
+        'explanation': f'{tables_checked} tables are exposed to the Data Agent schema resolver, well above the recommended 12-table optimum. Each additional table forces the NL-to-DAX engine to evaluate its relevance during schema resolution, adding approximately 200ms per extra table. With {tables_checked - 12} excess tables, the agent spends an estimated {(tables_checked - 12) * 200}ms on unnecessary schema lookups before it even begins generating DAX. This bloated scope also increases the probability of misrouting queries to the wrong table, which triggers retries and compounds the latency problem.',
         'affected_tables': [t for t in table_names if 'Stg' in t or 'Tmp' in t or 'Archive' in t],
         'affected_traces': [t['trace_id'] for t in traces if t.get('bd_schema', 0) > 5000],
-        'evidence': f'tables_checked = {tables_checked}',
-        'fix': 'Reduce to 12-15 core tables by removing staging, archive, and temporary tables.',
-        'resolution_steps': ['Audit table usage', 'Remove unused tables from scope', 'Re-test'],
-        'latency_contribution': f'~{(tables_checked - 12) * 200}ms excess schema resolution time'
+        'evidence': f'tables_checked = {tables_checked} (recommended max: 12) | Excess tables: {tables_checked - 12} | Estimated excess schema time: {(tables_checked - 12) * 200}ms per query',
+        'fix': 'Reduce the AI Data Schema scope to 12-15 core Fact and Dimension tables by removing staging, archive, temporary, and system tables. Use the Prep for AI interface in Fabric to uncheck non-essential tables from the schema scope.',
+        'resolution_steps': [
+            f'Open Prep for AI in Fabric workspace for {model_name}',
+            'Audit each table: keep only Fact* and Dim* tables that are referenced by active measures',
+            'Uncheck staging tables (Stg*), temporary tables (Tmp*), archive tables, and system tables',
+            'Verify remaining tables cover all active DAX measures and relationships',
+            'Ensure no orphaned relationships reference removed tables',
+            'Publish updated schema and re-run question battery to verify no regressions'
+        ],
+        'latency_contribution': f'{tables_checked - 12} excess tables x ~200ms each = ~{(tables_checked - 12) * 200}ms added to every query during schema resolution phase'
     })
 
 # Rule 5: Zero verified answers
@@ -374,13 +381,19 @@ if fuzzy_dups:
         'finding_id': f'F{fid:03d}', 'agent_id': 'schema', 'severity': 'HIGH', 'impact_ms': 3000,
         'issue': f'Fuzzy duplicate measures: {len(fuzzy_dups)} pairs with >85% name similarity',
         'affected_object': f'Semantic Model \u2192 {model_name} \u2192 Measures',
-        'explanation': f'Measures with very similar names confuse the NL-to-DAX engine: {"; ".join(f"{a} vs {b} ({s})" for a,b,s in fuzzy_dups[:3])}. The agent may pick the wrong measure or retry multiple times.',
+        'explanation': f'{len(fuzzy_dups)} pairs of measures have names that are more than 85% similar, which confuses the NL-to-DAX engine during measure resolution. Similar pairs include: {"; ".join(f"{a} vs {b} ({s} similar)" for a,b,s in fuzzy_dups[:3])}{"..." if len(fuzzy_dups) > 3 else ""}. When the agent encounters a user query referencing one of these measures, it may select the wrong one or generate DAX that references both, causing incorrect results. Disambiguation failures trigger retries, each adding 3-5 seconds. Even when the correct measure is selected on first attempt, the agent spends extra time evaluating which measure to use.',
         'affected_tables': [],
         'affected_traces': [t['trace_id'] for t in traces if t.get('retries', 0) > 0],
-        'evidence': f'Similar pairs: {"; ".join(f"{a} \u2194 {b} ({s})" for a,b,s in fuzzy_dups)}',
-        'fix': 'Consolidate similar measures or add clear descriptions to disambiguate.',
-        'resolution_steps': ['Review measure pairs', 'Rename for clarity or hide duplicates', 'Add descriptions', 'Re-test'],
-        'latency_contribution': f'~{3000}ms per query affected by measure ambiguity'
+        'evidence': f'Fuzzy duplicate pairs ({len(fuzzy_dups)} total): {"; ".join(f"{a} \u2194 {b} ({s})" for a,b,s in fuzzy_dups)} | Queries with retries: {len([t for t in traces if t.get("retries", 0) > 0])}',
+        'fix': 'For each pair: either consolidate into a single canonical measure (hide the duplicate), or rename both measures to be clearly distinct. Add descriptions to all measures explaining what each calculates and when to use it.',
+        'resolution_steps': [
+            f'Review these similar measure pairs: {"; ".join(f"{a} vs {b}" for a,b,s in fuzzy_dups[:5])}',
+            'For true duplicates: hide the non-canonical version (set IsHidden = true)',
+            'For distinct measures with similar names: rename for clarity (e.g., "Total Encounters (Count)" vs "Total Encounters (Revenue)")',
+            'Add descriptions to all remaining measures explaining their calculation and use case',
+            'Publish updated model and re-run question battery to verify disambiguation'
+        ],
+        'latency_contribution': f'~{3000}ms per query affected by measure ambiguity across {len(fuzzy_dups)} similar pairs'
     })
 
 # Rule 10: Hidden columns referenced
@@ -391,13 +404,20 @@ if hidden_cols:
         'finding_id': f'F{fid:03d}', 'agent_id': 'schema', 'severity': 'MEDIUM', 'impact_ms': 1500,
         'issue': f'{len(hidden_cols)} hidden columns in scope ({", ".join(c["name"] for c in hidden_cols[:3])})',
         'affected_object': f'Semantic Model \u2192 {model_name} \u2192 Columns',
-        'explanation': f'Hidden columns ({", ".join(c["name"] for c in hidden_cols)}) are still visible to the Data Agent schema resolver. If DAX references them, the query may fail or produce unexpected results.',
+        'explanation': f'{len(hidden_cols)} columns are marked as hidden in the semantic model but remain visible to the Data Agent schema resolver. Hidden columns include: {", ".join(c["name"] for c in hidden_cols[:6])}{"..." if len(hidden_cols) > 6 else ""}. When the NL-to-DAX engine encounters these columns, it may attempt to generate DAX referencing them. The resulting query may fail (if the column is truly inaccessible) or produce unexpected results (if it returns data the user should not see). Each failed column reference triggers a retry cycle, adding 3-5 seconds of latency.',
         'affected_tables': list(set(c.get('table_id', '') for c in hidden_cols)),
         'affected_traces': [],
-        'evidence': f'Hidden columns: {", ".join(c["name"] for c in hidden_cols)}',
-        'fix': 'Either fully exclude hidden columns from AI Data Schema or make them visible if needed.',
-        'resolution_steps': ['Review hidden columns', 'Exclude from AI scope or make visible', 'Re-test'],
-        'latency_contribution': f'~{1500}ms risk if agent references hidden columns causing errors'
+        'evidence': f'Hidden columns: {", ".join(c["name"] for c in hidden_cols)} | Tables affected: {", ".join(set(c.get("table_id", "") for c in hidden_cols))} | Total hidden: {len(hidden_cols)}',
+        'fix': 'For each hidden column, decide: (1) exclude it entirely from the AI Data Schema so the agent never sees it, or (2) make it visible if it is needed for queries. Do not leave columns in a half-hidden state where the agent can reference them but queries may fail.',
+        'resolution_steps': [
+            'Open Power BI Desktop and navigate to the semantic model',
+            f'Review these hidden columns: {", ".join(c["name"] for c in hidden_cols[:5])}',
+            'For columns not needed by the agent: exclude from AI Data Schema via Prep for AI',
+            'For columns needed by the agent: set IsHidden = false in the model',
+            'Publish updated model to Fabric workspace',
+            'Re-run question battery to verify no DAX errors reference hidden columns'
+        ],
+        'latency_contribution': f'~{1500}ms risk per query if agent references hidden columns and triggers retry cycles'
     })
 
 # Rule 9: Missing table descriptions
@@ -408,13 +428,20 @@ if len(tables_no_desc) > len(visible_tables) * 0.3:
         'finding_id': f'F{fid:03d}', 'agent_id': 'schema', 'severity': 'MEDIUM', 'impact_ms': 2000,
         'issue': f'{len(tables_no_desc)}/{len(visible_tables)} visible tables missing descriptions',
         'affected_object': f'Semantic Model \u2192 {model_name} \u2192 Table Descriptions',
-        'explanation': f'Most tables lack descriptions. The agent relies on table names alone to determine which tables to query, increasing misrouting risk.',
+        'explanation': f'{len(tables_no_desc)} of {len(visible_tables)} visible tables ({int(len(tables_no_desc)/max(len(visible_tables),1)*100)}%) are missing descriptions. Tables without descriptions include: {", ".join(t["name"] for t in tables_no_desc[:5])}{"..." if len(tables_no_desc) > 5 else ""}. When the Data Agent resolves which tables to query, it relies heavily on table descriptions to understand each table\'s purpose, grain (one row per what?), and domain context. Without descriptions, the agent must guess table relevance from names alone, leading to misrouting (querying the wrong table), which triggers retries and adds 2-5 seconds per misrouted query.',
         'affected_tables': [t['name'] for t in tables_no_desc[:5]],
         'affected_traces': [t['trace_id'] for t in traces if t.get('retries', 0) > 0],
-        'evidence': f'{len(tables_no_desc)} of {len(visible_tables)} visible tables have no description',
-        'fix': 'Add concise descriptions to all visible tables explaining their purpose and grain.',
-        'resolution_steps': ['Open model in Power BI Desktop', 'Add descriptions to each table', 'Publish to Fabric'],
-        'latency_contribution': f'~{2000}ms from misrouting due to ambiguous table purposes'
+        'evidence': f'{len(tables_no_desc)} of {len(visible_tables)} visible tables missing descriptions | Missing: {", ".join(t["name"] for t in tables_no_desc)} | Retry-affected traces: {len([t for t in traces if t.get("retries", 0) > 0])}',
+        'fix': 'Add concise, informative descriptions to every visible table. Each description should include: (1) the table\'s purpose, (2) the grain (what one row represents), and (3) key columns or measures. Example: "FactEncounter: One row per patient encounter. Contains admission/discharge dates, LOS, DRG, and financial metrics."',
+        'resolution_steps': [
+            'Open the semantic model in Power BI Desktop',
+            f'Navigate to each table missing a description: {", ".join(t["name"] for t in tables_no_desc[:5])}',
+            'Add a 1-2 sentence description covering purpose, grain, and key columns',
+            'For fact tables: specify what one row represents and list key measures',
+            'For dimension tables: specify the entity and list key attributes',
+            'Publish updated model to Fabric and verify via Prep for AI that descriptions appear'
+        ],
+        'latency_contribution': f'~{2000}ms from table misrouting due to missing descriptions, causing retries on {len([t for t in traces if t.get("retries", 0) > 0])} queries'
     })
 
 # Bidirectional cross-filter
@@ -425,13 +452,20 @@ if bidir_rels:
         'finding_id': f'F{fid:03d}', 'agent_id': 'schema', 'severity': 'HIGH', 'impact_ms': 3500,
         'issue': f'Bi-directional cross-filter on {len(bidir_rels)} relationship(s)',
         'affected_object': f'Semantic Model \u2192 {model_name} \u2192 Relationships',
-        'explanation': f'Bi-directional cross-filter between {" and ".join(f"{r.get("from_table")}\u2194{r.get("to_table")}" for r in bidir_rels)} creates ambiguous filter propagation. The DAX engine must evaluate multiple filter paths, increasing execution time.',
+        'explanation': f'{len(bidir_rels)} relationship(s) use bi-directional cross-filtering: {" and ".join(f"{r.get("from_table")}\u2194{r.get("to_table")}" for r in bidir_rels)}. Bi-directional cross-filters force the VertiPaq engine to evaluate filter propagation in both directions across the relationship, effectively doubling the filter evaluation work. This creates ambiguous filter contexts where the engine must determine which direction takes precedence, leading to longer execution times. In a star schema, relationships should almost always be single-direction (dimension filters fact). Bi-directional is only justified for many-to-many bridging tables.',
         'affected_tables': list(set(r.get('from_table', '') for r in bidir_rels) | set(r.get('to_table', '') for r in bidir_rels)),
         'affected_traces': [t['trace_id'] for t in traces if t.get('bd_exec', 0) > 4000],
-        'evidence': f'Bi-directional: {", ".join(f"{r.get("from_table")}\u2194{r.get("to_table")}" for r in bidir_rels)}',
-        'fix': 'Change to single-direction cross-filter unless bi-directional is explicitly required.',
-        'resolution_steps': ['Open model relationships in Power BI Desktop', 'Change cross-filter to Single for each flagged relationship', 'Test DAX queries for correctness', 'Publish to Fabric'],
-        'latency_contribution': f'~{3500}ms from ambiguous filter paths in execution engine'
+        'evidence': f'Bi-directional relationships: {", ".join(f"{r.get("from_table")}\u2194{r.get("to_table")}" for r in bidir_rels)} | Execution-heavy traces (>4s exec): {len([t for t in traces if t.get("bd_exec", 0) > 4000])}',
+        'fix': 'Change each flagged relationship to single-direction cross-filter (dimension \u2192 fact) unless bi-directional is explicitly required for a many-to-many bridge table scenario. Single-direction eliminates ambiguous filter paths and reduces execution time.',
+        'resolution_steps': [
+            'Open the semantic model in Power BI Desktop \u2192 Model View',
+            f'Select each flagged relationship: {", ".join(f"{r.get("from_table")}\u2194{r.get("to_table")}" for r in bidir_rels)}',
+            'In relationship properties, change Cross Filter Direction from "Both" to "Single"',
+            'Ensure the direction flows from dimension to fact table',
+            'Test affected DAX queries to verify results are still correct',
+            'Publish updated model to Fabric workspace'
+        ],
+        'latency_contribution': f'~{3500}ms from ambiguous filter paths forcing double evaluation in VertiPaq engine across {len(bidir_rels)} relationship(s)'
     })
 
 # ---- DAX RULES ----

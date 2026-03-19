@@ -49,9 +49,41 @@ export default function TracesTab({ session }) {
 
   const avgLatency = traces.length > 0 ? traces.reduce((s, t) => s + t.total_ms, 0) / traces.length : 0;
   const retryCount = traces.filter(t => t.retries > 0).length;
+  const slowCount = traces.filter(t => t.total_ms > 20000).length;
+  const failCount = traces.filter(t => t.pass_fail === 'fail').length;
+  const outlierCount = traces.filter(t => t.total_ms > 45000).length;
+  const avgSchema = traces.length > 0 ? traces.reduce((s, t) => s + (t.bd_schema || 0), 0) / traces.length : 0;
+  const avgDax = traces.length > 0 ? traces.reduce((s, t) => s + (t.bd_nldax || 0), 0) / traces.length : 0;
+  const avgExec = traces.length > 0 ? traces.reduce((s, t) => s + (t.bd_exec || 0), 0) / traces.length : 0;
+  const dominantPhase = avgSchema >= avgDax && avgSchema >= avgExec ? 'Schema Resolution' : avgDax >= avgExec ? 'DAX Generation' : 'Execution';
 
   return (
     <div className="fade-in">
+      {/* Narrative Trace Analysis */}
+      {traces.length > 0 && (
+        <div className="glass" style={{ padding: '20px 24px', marginBottom: 20, borderLeft: '3px solid var(--teal)' }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 10, color: 'var(--teal)' }}>Trace Analysis Summary</h3>
+          <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 8 }}>
+            The analyzer collected <strong>{traces.length} query traces</strong> from the <strong>{session.modelName || 'semantic model'}</strong> in
+            the <strong>{DOMAIN_LABELS[session.domain] || session.domain || 'Unknown'}</strong> domain. The average end-to-end latency
+            is <strong style={{ color: avgLatency > 20000 ? 'var(--red)' : avgLatency > 10000 ? 'var(--amber)' : 'var(--green)' }}>{(avgLatency / 1000).toFixed(1)}s</strong>,
+            which is {avgLatency > 10000 ? <strong style={{ color: 'var(--red)' }}>{(avgLatency / 10000).toFixed(1)}x above</strong> : <strong style={{ color: 'var(--green)' }}>within</strong>} the
+            recommended 10-second SLA target for interactive Data Agent responses.
+          </p>
+          <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 8 }}>
+            <strong>Breakdown:</strong> {slowCount} queries ({((slowCount / traces.length) * 100).toFixed(0)}%) exceeded the 20-second threshold,
+            {retryCount} queries ({((retryCount / traces.length) * 100).toFixed(0)}%) required retries (indicating DAX generation failures on first attempt),
+            and {failCount} queries ({((failCount / traces.length) * 100).toFixed(0)}%) returned failures or empty results.
+            {outlierCount > 0 && <span> <strong style={{ color: 'var(--red)' }}>{outlierCount} extreme outlier{outlierCount > 1 ? 's' : ''}</strong> exceeded 45 seconds.</span>}
+          </p>
+          <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 0 }}>
+            <strong>Latency phases:</strong> The dominant phase is <strong>{dominantPhase}</strong> (avg {(Math.max(avgSchema, avgDax, avgExec) / 1000).toFixed(1)}s).
+            Schema Resolution averages {(avgSchema / 1000).toFixed(1)}s, DAX Generation averages {(avgDax / 1000).toFixed(1)}s,
+            and Execution averages {(avgExec / 1000).toFixed(1)}s per query. These breakdowns inform which fixes will have the highest impact.
+          </p>
+        </div>
+      )}
+
       {/* Summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
         {[

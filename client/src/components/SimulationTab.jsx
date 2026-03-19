@@ -49,9 +49,34 @@ export default function SimulationTab({ session, updateSession }) {
   }
 
   const maxMs = Math.max(simResult.baselineOutlierMs || 30000, 45000);
+  const totalFixReduction = Object.values(simResult.perFix).reduce((s, pf) => s + (pf.reductionMs || 0), 0);
 
   return (
     <div className="fade-in">
+      {/* Narrative Simulation Overview */}
+      <div className="glass" style={{ padding: '20px 24px', marginBottom: 20, borderLeft: '3px solid var(--teal)' }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 10, color: 'var(--teal)' }}>Monte Carlo Simulation Overview</h3>
+        <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 8 }}>
+          This simulation models the projected impact of each recommended fix on query latency using a <strong>pure deterministic math model</strong> calibrated
+          against Microsoft's published Fabric Data Agent performance benchmarks. Each fix applies reduction factors to the three latency phases:
+          Schema Resolution, DAX Generation, and Execution. Factors are capped at 78% (schema), 82% (DAX), and 65% (execution) to prevent
+          over-optimistic projections.
+        </p>
+        <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 8 }}>
+          <strong>Current baseline:</strong> Average latency is <strong style={{ color: 'var(--red)' }}>{(simResult.baselineAvgMs / 1000).toFixed(1)}s</strong> with
+          a <strong>{simResult.baselinePassRate}%</strong> pass rate (queries completing under 20s). The worst-case outlier
+          is <strong style={{ color: 'var(--red)' }}>{(simResult.baselineOutlierMs / 1000).toFixed(1)}s</strong>.
+          {activeFixes.length === 0
+            ? ' Toggle fixes below to see projected improvements. Each fix shows its individual contribution to latency reduction.'
+            : ` With ${activeFixes.length} fix${activeFixes.length > 1 ? 'es' : ''} applied, the projected average drops to ${(simResult.avgMs / 1000).toFixed(1)}s (-${simResult.reductionPct}%) and the pass rate improves to ${simResult.passRate}%.`
+          }
+        </p>
+        <p style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-muted)', marginBottom: 0 }}>
+          Note: Fixes are cumulative but subject to diminishing returns. The simulation accounts for compound reduction factors with a floor
+          of 1,600ms per trace (minimum achievable latency for any Fabric Data Agent query).
+        </p>
+      </div>
+
       {/* Metric cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
         <div className="glass metric-card">
@@ -184,7 +209,12 @@ export default function SimulationTab({ session, updateSession }) {
 
       {/* Fix toggles */}
       <div className="glass" style={{ padding: 20 }}>
-        <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>Fix Toggles</h3>
+        <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Fix Toggles</h3>
+        <p style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-muted)', marginBottom: 16 }}>
+          Click each fix to toggle it on/off and see its projected impact on latency. Fixes are ordered by estimated reduction.
+          Each shows the effort level (Low/Medium/High) and the responsible role (Data Engineer, AI Engineer, or Stakeholder).
+          {activeFixes.length > 0 && ` Currently ${activeFixes.length} fix${activeFixes.length > 1 ? 'es' : ''} selected — combined reduction: -${simResult.reductionPct}%.`}
+        </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {FIX_KEYS.map(fixKey => {
             const fix = FIXES[fixKey];
