@@ -2,55 +2,106 @@ import React, { useState, useEffect } from 'react';
 import { loginPopup, logout, getAccessToken, setClientConfig, getClientConfig } from '../auth/msalConfig';
 import { loadSampleDataset, getWorkspaces, getModels, collectData, getScenarios, loadScenario, healthCheck } from '../api/proxy';
 
-// Setup checklist steps for Fabric connection
+// Comprehensive setup checklist for Fabric Data Agent testing
 const SETUP_STEPS = [
   {
     id: 'azure_app',
-    title: 'Register Azure AD App',
-    description: 'Create an App Registration in Azure Portal with SPA redirect URI http://localhost:5173',
+    title: '1. Register Azure AD App (MSAL)',
+    description: 'Create an App Registration in Azure Portal → Authentication → Add SPA platform → Redirect URI: http://localhost:5173. Copy the Application (Client) ID.',
     link: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/CreateApplicationBlade',
     linkText: 'Open Azure Portal',
     testable: false,
+    category: 'auth',
   },
   {
     id: 'api_permissions',
-    title: 'Add API Permissions',
-    description: 'Grant Dataset.Read.All (Power BI) and Workspace.Read.All (Fabric) delegated permissions',
-    link: 'https://learn.microsoft.com/en-us/fabric/data-agents/concept-data-agents',
-    linkText: 'View Docs',
+    title: '2. Add API Permissions (Delegated)',
+    description: 'Azure Portal → App Registration → API Permissions → Add: Power BI Service (Dataset.Read.All, Workspace.Read.All) + Microsoft Graph (User.Read). Click "Grant admin consent" if you have admin rights.',
+    link: 'https://learn.microsoft.com/en-us/power-bi/developer/embedded/register-app',
+    linkText: 'Permission Docs',
     testable: false,
+    category: 'auth',
   },
   {
     id: 'client_config',
-    title: 'Configure Client ID & Tenant',
-    description: 'Set clientId and tenantId in client/src/auth/msalConfig.js from your App Registration',
+    title: '3. Configure Client ID & Tenant',
+    description: 'Paste your Application (Client) ID and Tenant ID in the "Quick Setup" section below. No config files to edit.',
     testable: false,
+    category: 'auth',
   },
   {
     id: 'backend_running',
-    title: 'Backend Server Running',
-    description: 'Express proxy on port 3001 — handles LLM calls, Fabric API, and SQLite',
+    title: '4. Backend Server Running',
+    description: 'Express proxy on port 3001 — handles LLM calls, Fabric REST API, SQLite storage, and Python pipeline.',
     testable: true,
     testAction: 'backend',
+    category: 'infra',
   },
   {
     id: 'llm_configured',
-    title: 'LLM Endpoint Configured',
-    description: 'Azure OpenAI or compatible endpoint set in server/.env (LLM_ENDPOINT, LLM_MODEL)',
+    title: '5. LLM Endpoint Configured',
+    description: 'Azure OpenAI or compatible endpoint set in server/.env → LLM_ENDPOINT, LLM_API_KEY, LLM_MODEL. Needed for AI agent analysis (not required for deterministic rule checks).',
     testable: true,
     testAction: 'llm',
+    category: 'infra',
   },
   {
-    id: 'fabric_workspace',
-    title: 'Fabric Workspace Ready',
-    description: 'Have your Workspace ID from the Power BI URL and a Data Agent with a semantic model',
+    id: 'chromadb_ready',
+    title: '6. ChromaDB Knowledge Base',
+    description: '500 Fabric latency issue patterns embedded for RAG grounding. Built automatically by setup.sh or run: python3 knowledge/embedder.py',
+    testable: true,
+    testAction: 'chromadb',
+    category: 'infra',
+  },
+  {
+    id: 'fabric_capacity',
+    title: '7. Fabric Capacity Available',
+    description: 'Ensure your Fabric capacity (F2/F4/F64+) is active and not paused. Data Agents require Fabric capacity — not Power BI Pro/Premium Per User alone.',
+    link: 'https://learn.microsoft.com/en-us/fabric/enterprise/licenses',
+    linkText: 'Capacity Docs',
     testable: false,
+    category: 'fabric',
+  },
+  {
+    id: 'xmla_endpoint',
+    title: '8. XMLA Endpoint Enabled',
+    description: 'Fabric Admin Portal → Capacity Settings → Enable XMLA read/write endpoint. Required for semantic model metadata inspection and DAX query profiling.',
+    link: 'https://learn.microsoft.com/en-us/power-bi/enterprise/service-premium-connect-tools',
+    linkText: 'XMLA Docs',
+    testable: false,
+    category: 'fabric',
+  },
+  {
+    id: 'semantic_model',
+    title: '9. Semantic Model in Lakehouse/Warehouse',
+    description: 'Your Data Agent must have a semantic model (dataset) connected to a Lakehouse or Warehouse with tables and measures defined. Direct Lake or Import mode.',
+    link: 'https://learn.microsoft.com/en-us/fabric/data-warehouse/semantic-models',
+    linkText: 'Semantic Model Docs',
+    testable: false,
+    category: 'fabric',
+  },
+  {
+    id: 'data_agent_created',
+    title: '10. Data Agent Created & Published',
+    description: 'Fabric workspace → New → Data Agent → Select semantic model → Add instructions → Publish. Note the Workspace ID from the URL.',
+    link: 'https://learn.microsoft.com/en-us/fabric/data-agents/concept-data-agents',
+    linkText: 'Data Agent Docs',
+    testable: false,
+    category: 'fabric',
   },
   {
     id: 'oauth_login',
-    title: 'Sign In via OAuth',
-    description: 'Click "Connect to Fabric (OAuth)" below to authenticate with your Microsoft account',
+    title: '11. Sign In via OAuth (MSAL)',
+    description: 'Click "Connect to Fabric (OAuth)" below. Authenticates as YOUR user via browser popup — no service principal needed. Tests one Data Agent at a time.',
     testable: false,
+    category: 'connect',
+  },
+  {
+    id: 'workspace_select',
+    title: '12. Select Workspace & Data Agent',
+    description: 'After sign-in, enter your Workspace ID → Load models → Select the Data Agent to analyze. Each run tests one agent with 30-50 domain-specific prompts.',
+    testable: false,
+    category: 'connect',
   },
 ];
 
@@ -99,6 +150,22 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
         }));
         if (hasLlm) {
           setCheckedSteps(prev => ({ ...prev, llm_configured: true }));
+        }
+      } else if (testAction === 'chromadb') {
+        const res = await fetch('/api/knowledge/status');
+        if (res.ok) {
+          const data = await res.json();
+          const total = Object.values(data.collections || {}).reduce((s, v) => s + v, 0);
+          setTestResults(prev => ({
+            ...prev,
+            chromadb: total > 0 ? 'pass' : 'fail',
+            chromadb_detail: total > 0 ? `${total} issue patterns embedded` : 'No embeddings found — run: python3 knowledge/embedder.py',
+          }));
+          if (total > 0) {
+            setCheckedSteps(prev => ({ ...prev, chromadb_ready: true }));
+          }
+        } else {
+          setTestResults(prev => ({ ...prev, chromadb: 'fail', chromadb_detail: 'ChromaDB endpoint not responding' }));
         }
       }
     } catch (err) {
@@ -298,17 +365,46 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
               {SETUP_STEPS.map((step, idx) => {
                 const isChecked = checkedSteps[step.id];
                 const testResult = testResults[step.testAction];
+                // Show category header before first item in each category
+                const prevCategory = idx > 0 ? SETUP_STEPS[idx - 1].category : null;
+                const showCategoryHeader = step.category !== prevCategory;
+                const categoryLabels = {
+                  auth: 'Authentication & MSAL Setup',
+                  infra: 'Infrastructure & Services',
+                  fabric: 'Fabric Environment',
+                  connect: 'Connect & Test',
+                };
+                const categoryColors = {
+                  auth: 'var(--cyan)',
+                  infra: 'var(--teal)',
+                  fabric: 'var(--blue)',
+                  connect: 'var(--green)',
+                };
                 return (
-                  <div
-                    key={step.id}
-                    style={{
-                      padding: '10px 16px',
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: 10,
-                      borderBottom: idx < SETUP_STEPS.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
-                    }}
-                  >
+                  <React.Fragment key={step.id}>
+                    {showCategoryHeader && (
+                      <div style={{
+                        padding: '10px 16px 6px',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.05em',
+                        color: categoryColors[step.category] || 'var(--text-muted)',
+                        borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.08)' : 'none',
+                        marginTop: idx > 0 ? 4 : 0,
+                      }}>
+                        {categoryLabels[step.category] || step.category}
+                      </div>
+                    )}
+                    <div
+                      style={{
+                        padding: '10px 16px',
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: 10,
+                        borderBottom: idx < SETUP_STEPS.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                      }}
+                    >
                     <input
                       type="checkbox"
                       checked={!!isChecked}
@@ -323,21 +419,6 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
                         textDecoration: isChecked ? 'line-through' : 'none',
                         opacity: isChecked ? 0.7 : 1,
                       }}>
-                        <span style={{
-                          display: 'inline-block',
-                          width: 20,
-                          height: 20,
-                          lineHeight: '20px',
-                          textAlign: 'center',
-                          borderRadius: '50%',
-                          background: isChecked ? 'var(--green)' : 'rgba(255,255,255,0.08)',
-                          color: isChecked ? '#000' : 'var(--text-muted)',
-                          fontSize: 11,
-                          fontWeight: 700,
-                          marginRight: 8,
-                        }}>
-                          {idx + 1}
-                        </span>
                         {step.title}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, paddingLeft: 28 }}>
@@ -389,6 +470,7 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
                       </div>
                     </div>
                   </div>
+                  </React.Fragment>
                 );
               })}
             </div>
