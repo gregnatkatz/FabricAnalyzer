@@ -1,8 +1,20 @@
 import React from 'react';
+import { simulate } from '../simulation/mathModel';
+import { FIX_KEYS } from '../constants/fixes';
 
 export default function ReportView({ session }) {
   const findings = session.findings || [];
   const vr = session.validationResults;
+  const cuMetrics = session.cuMetrics || null;
+  const traces = session.traces || [];
+
+  // Compute simulation with all fixes applied for the report
+  const allFixSim = simulate(traces, FIX_KEYS);
+  const baselineAvgMs = allFixSim.baselineAvgMs;
+  const projectedAvgMs = allFixSim.avgMs;
+  const reductionPct = allFixSim.reductionPct;
+  const baselinePassRate = allFixSim.baselinePassRate;
+  const projectedPassRate = allFixSim.passRate;
 
   const severityCounts = {
     CRITICAL: findings.filter(f => f.severity === 'CRITICAL').length,
@@ -113,13 +125,114 @@ export default function ReportView({ session }) {
         </div>
       )}
 
-      {/* Section 7: Simulation */}
-      <div style={{ marginBottom: 30 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>What-If Simulation</h2>
-        <p style={{ fontSize: 13, color: '#666' }}>
-          Math model and Monte Carlo simulation results are available in the interactive tool.
-        </p>
-      </div>
+      {/* Section 7: Before vs After Comparison */}
+      {traces.length > 0 && (
+        <div style={{ marginBottom: 30 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Before vs After Comparison</h2>
+          <p style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
+            Projected impact if all recommended fixes are applied simultaneously.
+          </p>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+            <thead>
+              <tr style={{ borderBottom: '2px solid #e0e0e0', textAlign: 'left' }}>
+                <th style={{ padding: '8px 12px' }}>Metric</th>
+                <th style={{ padding: '8px 12px' }}>Before</th>
+                <th style={{ padding: '8px 12px' }}>After (Projected)</th>
+                <th style={{ padding: '8px 12px' }}>Change</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 12px', fontWeight: 500 }}>Avg Latency</td>
+                <td style={{ padding: '8px 12px', color: '#d32f2f' }}>{(baselineAvgMs / 1000).toFixed(1)}s</td>
+                <td style={{ padding: '8px 12px', color: '#2e7d32' }}>{(projectedAvgMs / 1000).toFixed(1)}s</td>
+                <td style={{ padding: '8px 12px', color: '#2e7d32', fontWeight: 600 }}>-{reductionPct}%</td>
+              </tr>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 12px', fontWeight: 500 }}>Pass Rate (&lt;20s)</td>
+                <td style={{ padding: '8px 12px', color: '#d32f2f' }}>{baselinePassRate}%</td>
+                <td style={{ padding: '8px 12px', color: '#2e7d32' }}>{projectedPassRate}%</td>
+                <td style={{ padding: '8px 12px', color: '#2e7d32', fontWeight: 600 }}>+{projectedPassRate - baselinePassRate}%</td>
+              </tr>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 12px', fontWeight: 500 }}>Outlier Latency</td>
+                <td style={{ padding: '8px 12px', color: '#d32f2f' }}>{(allFixSim.baselineOutlierMs / 1000).toFixed(1)}s</td>
+                <td style={{ padding: '8px 12px', color: '#2e7d32' }}>{(allFixSim.outlierMs / 1000).toFixed(1)}s</td>
+                <td style={{ padding: '8px 12px', color: '#2e7d32', fontWeight: 600 }}>
+                  -{allFixSim.baselineOutlierMs > 0 ? Math.round(((allFixSim.baselineOutlierMs - allFixSim.outlierMs) / allFixSim.baselineOutlierMs) * 100) : 0}%
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          {/* Per-fix breakdown */}
+          <h3 style={{ fontSize: 16, fontWeight: 600, marginTop: 20, marginBottom: 8 }}>Per-Fix Impact Breakdown</h3>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: '2px solid #e0e0e0', textAlign: 'left' }}>
+                <th style={{ padding: '6px 12px' }}>Fix</th>
+                <th style={{ padding: '6px 12px' }}>Reduction</th>
+                <th style={{ padding: '6px 12px' }}>%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(allFixSim.perFix)
+                .sort(([,a], [,b]) => b.reductionMs - a.reductionMs)
+                .map(([key, pf]) => (
+                  <tr key={key} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                    <td style={{ padding: '6px 12px' }}>{key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</td>
+                    <td style={{ padding: '6px 12px' }}>-{(pf.reductionMs / 1000).toFixed(1)}s</td>
+                    <td style={{ padding: '6px 12px', color: '#2e7d32' }}>-{pf.reductionPct}%</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Section 7b: CU Cost Correlation */}
+      {cuMetrics && (
+        <div style={{ marginBottom: 30 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Capacity Unit (CU) Cost Correlation</h2>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+            <thead>
+              <tr style={{ borderBottom: '2px solid #e0e0e0', textAlign: 'left' }}>
+                <th style={{ padding: '8px 12px' }}>Metric</th>
+                <th style={{ padding: '8px 12px' }}>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 12px' }}>AI CU (28-day)</td>
+                <td style={{ padding: '8px 12px', fontWeight: 600 }}>{(cuMetrics.ai_cu_28d || 0).toLocaleString()}</td>
+              </tr>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 12px' }}>Query CU (28-day)</td>
+                <td style={{ padding: '8px 12px', fontWeight: 600 }}>{(cuMetrics.query_cu_28d || 0).toLocaleString()}</td>
+              </tr>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 12px' }}>Throttle Events</td>
+                <td style={{ padding: '8px 12px', fontWeight: 600, color: (cuMetrics.throttle_events || 0) > 0 ? '#d32f2f' : '#2e7d32' }}>
+                  {cuMetrics.throttle_events || 0}
+                </td>
+              </tr>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 12px' }}>P50 / P95 Latency</td>
+                <td style={{ padding: '8px 12px', fontWeight: 600 }}>
+                  {((cuMetrics.p50_ms || 0) / 1000).toFixed(1)}s / {((cuMetrics.p95_ms || 0) / 1000).toFixed(1)}s
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          {reductionPct > 0 && (
+            <div style={{ marginTop: 12, padding: '10px 14px', background: '#e8f5e9', borderRadius: 6, border: '1px solid #c8e6c9' }}>
+              <p style={{ fontSize: 13, color: '#2e7d32', margin: 0 }}>
+                Estimated CU Reduction: ~{Math.round((cuMetrics.ai_cu_28d || 0) * reductionPct / 100).toLocaleString()} AI CU/28d saved
+                {cuMetrics.throttle_events > 0 && ` | Latency reduction of ${reductionPct}% may reduce throttling events from ${cuMetrics.throttle_events} toward zero.`}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Section 8 & 9: Validation Evidence (if available) */}
       {vr && (

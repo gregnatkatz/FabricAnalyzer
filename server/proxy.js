@@ -18,7 +18,7 @@ app.use(express.json({ limit: '10mb' }));
 const PORT = process.env.PORT || 3001;
 const SQLITE_DIR = resolve(process.env.SQLITE_DIR || './data');
 const TMP_DIR = resolve(process.env.TMP_DIR || './tmp');
-const CHROMADB_PATH = resolve(process.env.CHROMADB_PATH || './chroma_db');
+const CHROMADB_PATH = resolve(process.env.CHROMADB_PATH || join(__dirname, '..', 'chroma_db'));
 const PYTHON_PATH = process.env.PYTHON_PATH || 'python3';
 
 // Ensure directories exist
@@ -404,6 +404,83 @@ app.get('/api/validate', (req, res) => {
   });
 
   req.on('close', () => py.kill());
+});
+
+// ChromaDB query endpoint
+app.post('/api/knowledge/query', (req, res) => {
+  const { query, nResults = 5, collection = 'microsoft_docs' } = req.body;
+  if (!query) return res.status(400).json({ error: 'query required' });
+
+  const pythonScript = `
+import chromadb, json, sys
+try:
+    client = chromadb.PersistentClient(path='${CHROMADB_PATH}')
+    col = client.get_collection('${collection}')
+    results = col.query(query_texts=['''${query.replace(/'/g, "\\'")}'''], n_results=${nResults})
+    docs = []
+    for i in range(len(results['documents'][0])):
+        docs.append({
+            'id': results['ids'][0][i],
+            'document': results['documents'][0][i][:500],
+            'metadata': results['metadatas'][0][i],
+            'distance': results['distances'][0][i] if results.get('distances') else None,
+        })
+    print(json.dumps({'results': docs, 'total': col.count()}))
+except Exception as e:
+    print(json.dumps({'error': str(e)}))
+`;
+
+  const py = spawn(PYTHON_PATH, ['-c', pythonScript], {
+    cwd: join(__dirname, '..'),
+  });
+  let output = '';
+  let stderr = '';
+  py.stdout.on('data', d => output += d);
+  py.stderr.on('data', d => stderr += d);
+  py.on('close', (code) => {
+    try {
+      const data = JSON.parse(output);
+      if (data.error) return res.status(500).json({ error: data.error });
+      res.json(data);
+    } catch (e) {
+      res.status(500).json({ error: stderr || 'ChromaDB query failed' });
+    }
+  });
+});
+
+// ChromaDB status endpoint
+app.get('/api/knowledge/status', (req, res) => {
+  const pythonScript = `
+import json, sys
+try:
+    import chromadb
+    client = chromadb.PersistentClient(path='${CHROMADB_PATH}')
+    collections = {}
+    for name in ['microsoft_docs', 'past_findings']:
+        try:
+            col = client.get_collection(name)
+            collections[name] = col.count()
+        except:
+            collections[name] = 0
+    print(json.dumps({'status': 'ok', 'collections': collections}))
+except ImportError:
+    print(json.dumps({'status': 'not_installed', 'error': 'chromadb not installed'}))
+except Exception as e:
+    print(json.dumps({'status': 'error', 'error': str(e)}))
+`;
+
+  const py = spawn(PYTHON_PATH, ['-c', pythonScript], {
+    cwd: join(__dirname, '..'),
+  });
+  let output = '';
+  py.stdout.on('data', d => output += d);
+  py.on('close', () => {
+    try {
+      res.json(JSON.parse(output));
+    } catch (e) {
+      res.json({ status: 'error', error: 'Failed to check ChromaDB' });
+    }
+  });
 });
 
 // PDF export
