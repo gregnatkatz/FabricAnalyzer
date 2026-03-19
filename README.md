@@ -13,6 +13,14 @@ A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces
 - **20 Test Scenarios** — Pre-built scenarios across 8 domains (Revenue Cycle, Supply Chain, Clinical, Financial, etc.)
 - **Per-Agent Model Selection** — Choose from 4 Azure AI models per pipeline agent
 
+## Video Walkthrough
+
+A full end-to-end walkthrough showing sample data loading, findings analysis, and PDF export:
+
+https://github.com/user-attachments/assets/walkthrough.mp4
+
+[Download walkthrough video](docs/walkthrough.mp4)
+
 ## Screenshots
 
 ### Connect Tab
