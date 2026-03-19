@@ -3,7 +3,7 @@ import cors from 'cors';
 import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import { spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,7 +18,7 @@ app.use(express.json({ limit: '10mb' }));
 const PORT = process.env.PORT || 3001;
 const SQLITE_DIR = resolve(process.env.SQLITE_DIR || './data');
 const TMP_DIR = resolve(process.env.TMP_DIR || './tmp');
-const CHROMADB_PATH = resolve(process.env.CHROMADB_PATH || './chroma_db');
+const CHROMADB_PATH = resolve(process.env.CHROMADB_PATH || join(__dirname, '..', 'chroma_db'));
 const PYTHON_PATH = process.env.PYTHON_PATH || 'python3';
 
 // Ensure directories exist
@@ -155,7 +155,7 @@ app.post('/api/sample', (req, res) => {
 
   const sessionId = `sample_${Date.now()}`;
 
-  // Read traces from sample.db
+  // Read traces + CU metrics from sample.db
   const pythonScript = `
 import sqlite3, json, sys
 db = sqlite3.connect('${sampleDbPath}')
@@ -163,7 +163,11 @@ db.row_factory = sqlite3.Row
 traces = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
 config = dict(db.execute('SELECT * FROM agent_config LIMIT 1').fetchone() or {})
 model = dict(db.execute('SELECT * FROM models LIMIT 1').fetchone() or {})
-print(json.dumps({'traces': traces, 'config': config, 'model': model}))
+try:
+    cu = dict(db.execute('SELECT * FROM cu_metrics LIMIT 1').fetchone() or {})
+except:
+    cu = {}
+print(json.dumps({'traces': traces, 'config': config, 'model': model, 'cuMetrics': cu}))
 db.close()
 `;
 
@@ -185,6 +189,85 @@ db.close()
         modelName: data.model?.name || 'LOS Sample Model',
         domain: 'CLINICAL_INPATIENT',
         traces: data.traces || [],
+        cuMetrics: data.cuMetrics || null,
+      });
+    } catch (e) {
+      res.status(500).json({ error: `Parse error: ${e.message}` });
+    }
+  });
+});
+
+// List available test scenarios
+app.get('/api/scenarios', (req, res) => {
+  const scenariosDir = join(__dirname, '..', 'sample_dataset', 'scenarios');
+  const metaPath = join(scenariosDir, 'scenarios_meta.json');
+  if (!existsSync(metaPath)) {
+    return res.json({ scenarios: [] });
+  }
+  try {
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+    res.json({ scenarios: meta });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Load a specific test scenario
+app.post('/api/sample/scenario', (req, res) => {
+  const { scenarioId } = req.body;
+  if (!scenarioId) return res.status(400).json({ error: 'scenarioId required' });
+
+  const dbPath = join(__dirname, '..', 'sample_dataset', 'scenarios', `scenario_${String(scenarioId).padStart(2, '0')}.db`);
+  if (!existsSync(dbPath)) {
+    return res.status(404).json({ error: `scenario_${String(scenarioId).padStart(2, '0')}.db not found` });
+  }
+
+  const sessionId = `scenario_${scenarioId}_${Date.now()}`;
+  const metaPath = join(__dirname, '..', 'sample_dataset', 'scenarios', 'scenarios_meta.json');
+  let scenarioMeta = {};
+  if (existsSync(metaPath)) {
+    const allMeta = JSON.parse(readFileSync(metaPath, 'utf8'));
+    scenarioMeta = allMeta.find(s => s.id === Number(scenarioId)) || {};
+  }
+
+  const pythonScript = `
+import sqlite3, json, sys
+db = sqlite3.connect('${dbPath}')
+db.row_factory = sqlite3.Row
+traces = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
+config = dict(db.execute('SELECT * FROM agent_config LIMIT 1').fetchone() or {})
+model = dict(db.execute('SELECT * FROM models LIMIT 1').fetchone() or {})
+try:
+    cu = dict(db.execute('SELECT * FROM cu_metrics LIMIT 1').fetchone() or {})
+except:
+    cu = {}
+print(json.dumps({'traces': traces, 'config': config, 'model': model, 'cuMetrics': cu}))
+db.close()
+`;
+
+  const py = spawn(PYTHON_PATH, ['-c', pythonScript]);
+  let output = '';
+  let stderr = '';
+  py.stdout.on('data', d => output += d);
+  py.stderr.on('data', d => stderr += d);
+  py.on('close', (code) => {
+    if (code !== 0) {
+      console.error('Scenario load error:', stderr);
+      return res.status(500).json({ error: stderr || 'Failed to load scenario' });
+    }
+    try {
+      const data = JSON.parse(output);
+      res.json({
+        sessionId,
+        dbPath,
+        modelName: data.model?.name || scenarioMeta.name || `Scenario ${scenarioId}`,
+        domain: scenarioMeta.domain || 'auto',
+        traces: data.traces || [],
+        cuMetrics: data.cuMetrics || null,
+        scenarioId: Number(scenarioId),
+        scenarioName: scenarioMeta.name || `Scenario ${scenarioId}`,
+        scenarioDescription: scenarioMeta.description || '',
+        keyIssues: scenarioMeta.key_issues || [],
       });
     } catch (e) {
       res.status(500).json({ error: `Parse error: ${e.message}` });
@@ -323,17 +406,105 @@ app.get('/api/validate', (req, res) => {
   req.on('close', () => py.kill());
 });
 
+// ChromaDB query endpoint
+app.post('/api/knowledge/query', (req, res) => {
+  const { query, nResults = 5, collection = 'microsoft_docs' } = req.body;
+  if (!query) return res.status(400).json({ error: 'query required' });
+
+  const pythonScript = `
+import chromadb, json, sys
+try:
+    client = chromadb.PersistentClient(path='${CHROMADB_PATH}')
+    col = client.get_collection('${collection}')
+    results = col.query(query_texts=['''${query.replace(/'/g, "\\'")}'''], n_results=${nResults})
+    docs = []
+    for i in range(len(results['documents'][0])):
+        docs.append({
+            'id': results['ids'][0][i],
+            'document': results['documents'][0][i][:500],
+            'metadata': results['metadatas'][0][i],
+            'distance': results['distances'][0][i] if results.get('distances') else None,
+        })
+    print(json.dumps({'results': docs, 'total': col.count()}))
+except Exception as e:
+    print(json.dumps({'error': str(e)}))
+`;
+
+  const py = spawn(PYTHON_PATH, ['-c', pythonScript], {
+    cwd: join(__dirname, '..'),
+  });
+  let output = '';
+  let stderr = '';
+  py.stdout.on('data', d => output += d);
+  py.stderr.on('data', d => stderr += d);
+  py.on('close', (code) => {
+    try {
+      const data = JSON.parse(output);
+      if (data.error) return res.status(500).json({ error: data.error });
+      res.json(data);
+    } catch (e) {
+      res.status(500).json({ error: stderr || 'ChromaDB query failed' });
+    }
+  });
+});
+
+// ChromaDB status endpoint
+app.get('/api/knowledge/status', (req, res) => {
+  const pythonScript = `
+import json, sys
+try:
+    import chromadb
+    client = chromadb.PersistentClient(path='${CHROMADB_PATH}')
+    collections = {}
+    for name in ['microsoft_docs', 'past_findings']:
+        try:
+            col = client.get_collection(name)
+            collections[name] = col.count()
+        except:
+            collections[name] = 0
+    print(json.dumps({'status': 'ok', 'collections': collections}))
+except ImportError:
+    print(json.dumps({'status': 'not_installed', 'error': 'chromadb not installed'}))
+except Exception as e:
+    print(json.dumps({'status': 'error', 'error': str(e)}))
+`;
+
+  const py = spawn(PYTHON_PATH, ['-c', pythonScript], {
+    cwd: join(__dirname, '..'),
+  });
+  let output = '';
+  py.stdout.on('data', d => output += d);
+  py.on('close', () => {
+    try {
+      res.json(JSON.parse(output));
+    } catch (e) {
+      res.json({ status: 'error', error: 'Failed to check ChromaDB' });
+    }
+  });
+});
+
 // PDF export
 app.post('/api/pdf', async (req, res) => {
   try {
+    const sessionData = req.body || {};
     const puppeteer = await import('puppeteer');
     const browser = await puppeteer.default.launch({
       headless: 'new',
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
     const page = await browser.newPage();
+
+    // Inject session data into the page before React renders
+    await page.evaluateOnNewDocument((data) => {
+      window.__REPORT_DATA__ = data;
+    }, sessionData);
+
     await page.goto('http://localhost:5173/report', { waitUntil: 'networkidle0', timeout: 30000 });
     await page.waitForSelector('#report-ready', { timeout: 10000 });
+
+    // Wait for React to re-render with injected data
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 500)));
+
     const pdf = await page.pdf({
       format: 'A4',
       margin: { top: '20mm', bottom: '20mm', left: '15mm', right: '15mm' },

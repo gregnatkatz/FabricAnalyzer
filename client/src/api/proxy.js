@@ -38,6 +38,17 @@ export async function loadSampleDataset() {
   return request('/sample', { method: 'POST' });
 }
 
+export async function getScenarios() {
+  return request('/scenarios');
+}
+
+export async function loadScenario(scenarioId) {
+  return request('/sample/scenario', {
+    method: 'POST',
+    body: JSON.stringify({ scenarioId }),
+  });
+}
+
 export async function getWorkspaces(accessToken) {
   return request('/fabric/workspaces', {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -65,11 +76,11 @@ export async function resetSession(scope, sessionId) {
   });
 }
 
-export async function exportPdf(sessionId) {
+export async function exportPdf(sessionData) {
   const res = await fetch(`${API_BASE}/pdf`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify(sessionData),
   });
   if (!res.ok) throw new Error('PDF export failed');
   return res.blob();

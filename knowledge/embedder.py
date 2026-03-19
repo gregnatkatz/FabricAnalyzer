@@ -12,15 +12,19 @@ except ImportError:
     CHROMA_AVAILABLE = False
 
 from knowledge.scraper import get_chunks
+from knowledge.issue_catalog import get_chromadb_chunks
 
 
 def embed_knowledge(chromadb_path='./chroma_db'):
-    """Embed all knowledge chunks into ChromaDB microsoft_docs collection."""
+    """Embed all knowledge chunks + 500 issue catalog into ChromaDB microsoft_docs collection."""
     if not CHROMA_AVAILABLE:
         print('ERROR: chromadb not installed. Run: pip install chromadb', file=sys.stderr)
         return 0
 
-    chunks = get_chunks()
+    doc_chunks = get_chunks()
+    issue_chunks = get_chromadb_chunks()
+    chunks = doc_chunks + issue_chunks
+    print(f'Embedding {len(doc_chunks)} doc chunks + {len(issue_chunks)} issue chunks = {len(chunks)} total')
     client = chromadb.PersistentClient(path=chromadb_path)
 
     # Delete existing collection if it exists, then recreate

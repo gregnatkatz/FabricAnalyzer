@@ -1,16 +1,22 @@
 import { PublicClientApplication } from '@azure/msal-browser';
 
-const msalConfig = {
-  auth: {
-    clientId: import.meta.env.VITE_MSAL_CLIENT_ID || '',
-    authority: `https://login.microsoftonline.com/${import.meta.env.VITE_MSAL_TENANT_ID || 'common'}`,
-    redirectUri: window.location.origin,
-  },
-  cache: {
-    // In-memory only — never use localStorage or sessionStorage
-    cacheLocation: 'memoryStorage',
-  },
-};
+// Default config — can be overridden at runtime via setClientConfig()
+let runtimeClientId = import.meta.env.VITE_MSAL_CLIENT_ID || '';
+let runtimeTenantId = import.meta.env.VITE_MSAL_TENANT_ID || 'common';
+
+function buildMsalConfig() {
+  return {
+    auth: {
+      clientId: runtimeClientId,
+      authority: `https://login.microsoftonline.com/${runtimeTenantId}`,
+      redirectUri: window.location.origin,
+    },
+    cache: {
+      // In-memory only — never use localStorage or sessionStorage
+      cacheLocation: 'memoryStorage',
+    },
+  };
+}
 
 const loginRequest = {
   scopes: [
@@ -28,9 +34,26 @@ const fabricScopes = {
 
 let msalInstance = null;
 
+/**
+ * Set Client ID and Tenant ID at runtime from the UI.
+ * Resets any existing MSAL instance so the next login uses new config.
+ */
+export function setClientConfig(clientId, tenantId) {
+  runtimeClientId = clientId;
+  runtimeTenantId = tenantId || 'common';
+  msalInstance = null; // force re-creation with new config
+}
+
+export function getClientConfig() {
+  return { clientId: runtimeClientId, tenantId: runtimeTenantId };
+}
+
 export function getMsalInstance() {
   if (!msalInstance) {
-    msalInstance = new PublicClientApplication(msalConfig);
+    if (!runtimeClientId) {
+      throw new Error('Client ID not configured. Paste your App Registration Client ID in the Quick Setup section.');
+    }
+    msalInstance = new PublicClientApplication(buildMsalConfig());
   }
   return msalInstance;
 }
@@ -65,4 +88,4 @@ export async function logout() {
   await instance.logoutPopup();
 }
 
-export { msalConfig, loginRequest, fabricScopes };
+export { loginRequest, fabricScopes };

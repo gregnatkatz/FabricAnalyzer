@@ -27,6 +27,7 @@ export default function SimulationTab({ session, updateSession }) {
   const [activeFixes, setActiveFixes] = useState([]);
   const traces = session.traces || [];
   const mc = session.monteCarloResults;
+  const cuMetrics = session.cuMetrics || null;
 
   // Pure synchronous simulation — updates within 100ms
   const simResult = useMemo(() => simulate(traces, activeFixes), [traces, activeFixes]);
@@ -72,6 +73,114 @@ export default function SimulationTab({ session, updateSession }) {
           <div className="label">Pass Rate (&lt;20s)</div>
         </div>
       </div>
+
+      {/* Before vs After Comparison Chart */}
+      {activeFixes.length > 0 && (
+        <div className="glass" style={{ padding: 20, marginBottom: 20 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>Before vs After Comparison</h3>
+          <div style={{ display: 'flex', gap: 24, alignItems: 'flex-end', height: 180 }}>
+            {/* Baseline bar */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <span style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', marginBottom: 8 }}>
+                {(simResult.baselineAvgMs / 1000).toFixed(1)}s
+              </span>
+              <div style={{
+                width: '100%', maxWidth: 80,
+                height: `${Math.max(20, (simResult.baselineAvgMs / maxMs) * 140)}px`,
+                background: 'linear-gradient(to top, rgba(239,68,68,0.6), rgba(245,158,11,0.4))',
+                borderRadius: '6px 6px 0 0',
+                border: '1px solid rgba(239,68,68,0.3)',
+              }} />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>Before</span>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Avg Latency</span>
+            </div>
+
+            {/* Arrow */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingBottom: 32 }}>
+              <span style={{ fontSize: 20, color: 'var(--green)' }}>&rarr;</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--green)', fontFamily: 'var(--font-mono)' }}>
+                -{simResult.reductionPct}%
+              </span>
+            </div>
+
+            {/* Projected bar */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <span style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--green)', marginBottom: 8 }}>
+                {(simResult.avgMs / 1000).toFixed(1)}s
+              </span>
+              <div style={{
+                width: '100%', maxWidth: 80,
+                height: `${Math.max(20, (simResult.avgMs / maxMs) * 140)}px`,
+                background: 'linear-gradient(to top, rgba(0,232,202,0.6), rgba(0,232,202,0.2))',
+                borderRadius: '6px 6px 0 0',
+                border: '1px solid rgba(0,232,202,0.3)',
+              }} />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>After</span>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Projected</span>
+            </div>
+
+            {/* Divider */}
+            <div style={{ width: 1, height: 140, background: 'var(--border)', alignSelf: 'center' }} />
+
+            {/* Pass Rate Before */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <span style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', marginBottom: 8 }}>
+                {simResult.baselinePassRate}%
+              </span>
+              <div style={{
+                width: '100%', maxWidth: 80,
+                height: `${Math.max(20, (simResult.baselinePassRate / 100) * 140)}px`,
+                background: simResult.baselinePassRate >= 70 ? 'rgba(245,158,11,0.4)' : 'rgba(239,68,68,0.4)',
+                borderRadius: '6px 6px 0 0',
+                border: `1px solid ${simResult.baselinePassRate >= 70 ? 'rgba(245,158,11,0.3)' : 'rgba(239,68,68,0.3)'}`,
+              }} />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>Before</span>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Pass Rate</span>
+            </div>
+
+            {/* Arrow */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingBottom: 32 }}>
+              <span style={{ fontSize: 20, color: 'var(--green)' }}>&rarr;</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--green)', fontFamily: 'var(--font-mono)' }}>
+                +{simResult.passRate - simResult.baselinePassRate}%
+              </span>
+            </div>
+
+            {/* Pass Rate After */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <span style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--green)', marginBottom: 8 }}>
+                {simResult.passRate}%
+              </span>
+              <div style={{
+                width: '100%', maxWidth: 80,
+                height: `${Math.max(20, (simResult.passRate / 100) * 140)}px`,
+                background: 'rgba(0,232,202,0.4)',
+                borderRadius: '6px 6px 0 0',
+                border: '1px solid rgba(0,232,202,0.3)',
+              }} />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>After</span>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Projected</span>
+            </div>
+          </div>
+
+          {/* CU impact estimate */}
+          {cuMetrics && (
+            <div style={{ marginTop: 16, padding: '10px 14px', background: 'rgba(0,232,202,0.05)', borderRadius: 6, border: '1px solid rgba(0,232,202,0.15)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Estimated CU Reduction</span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--green)', fontFamily: 'var(--font-mono)' }}>
+                  ~{Math.round((cuMetrics.ai_cu_28d || 0) * simResult.reductionPct / 100).toLocaleString()} AI CU/28d saved
+                </span>
+              </div>
+              {cuMetrics.throttle_events > 0 && simResult.reductionPct > 15 && (
+                <div style={{ fontSize: 11, color: 'var(--teal)', marginTop: 4 }}>
+                  Latency reduction of {simResult.reductionPct}% may reduce throttling events from {cuMetrics.throttle_events} toward zero.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Fix toggles */}
       <div className="glass" style={{ padding: 20 }}>

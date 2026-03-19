@@ -1,0 +1,207 @@
+[
+  {
+    "id": 1,
+    "name": "Revenue Cycle \u2014 Denial Management",
+    "domain": "REVENUE_CYCLE",
+    "key_issues": [
+      "instruction_bloat",
+      "measure_duplicates",
+      "zero_va",
+      "high_retries"
+    ]
+  },
+  {
+    "id": 2,
+    "name": "Revenue Cycle \u2014 AR Recovery",
+    "domain": "REVENUE_CYCLE",
+    "key_issues": [
+      "extreme_scope_bloat",
+      "zero_va",
+      "cu_throttling",
+      "missing_descriptions"
+    ]
+  },
+  {
+    "id": 3,
+    "name": "Workforce \u2014 Staffing Optimization",
+    "domain": "WORKFORCE",
+    "key_issues": [
+      "near_limit_instructions",
+      "low_va",
+      "fuzzy_duplicates",
+      "hidden_columns"
+    ]
+  },
+  {
+    "id": 4,
+    "name": "Workforce \u2014 Agency Spend",
+    "domain": "WORKFORCE",
+    "key_issues": [
+      "high_retries",
+      "physician_visible",
+      "wrong_table"
+    ]
+  },
+  {
+    "id": 5,
+    "name": "Supply Chain \u2014 Inventory Management",
+    "domain": "SUPPLY_CHAIN",
+    "key_issues": [
+      "extreme_scope_bloat",
+      "missing_descriptions",
+      "instruction_bloat",
+      "zero_va"
+    ]
+  },
+  {
+    "id": 6,
+    "name": "Supply Chain \u2014 Vendor Contract Analysis",
+    "domain": "SUPPLY_CHAIN",
+    "key_issues": [
+      "dax_generation_dominant",
+      "fuzzy_duplicates"
+    ]
+  },
+  {
+    "id": 7,
+    "name": "Patient Experience \u2014 HCAHPS Scores",
+    "domain": "PATIENT_EXPERIENCE",
+    "key_issues": [
+      "outlier_traces",
+      "topn_absent",
+      "high_retries"
+    ]
+  },
+  {
+    "id": 8,
+    "name": "Patient Experience \u2014 Complaint Resolution",
+    "domain": "PATIENT_EXPERIENCE",
+    "key_issues": [
+      "execution_dominant",
+      "hidden_columns"
+    ]
+  },
+  {
+    "id": 9,
+    "name": "Clinical Quality \u2014 Sepsis Bundle",
+    "domain": "CLINICAL_QUALITY",
+    "key_issues": [
+      "empty_results",
+      "measure_not_found",
+      "nl2dax_contamination"
+    ]
+  },
+  {
+    "id": 10,
+    "name": "Clinical Quality \u2014 Antibiotic Stewardship",
+    "domain": "CLINICAL_QUALITY",
+    "key_issues": [
+      "ambiguous_time",
+      "wrong_table",
+      "physician_visible"
+    ]
+  },
+  {
+    "id": 11,
+    "name": "Operational \u2014 ED Throughput",
+    "domain": "OPERATIONAL",
+    "key_issues": [
+      "retry_dominant",
+      "schema_lookup_dominant",
+      "high_retries"
+    ]
+  },
+  {
+    "id": 12,
+    "name": "Operational \u2014 OR Utilization",
+    "domain": "OPERATIONAL",
+    "key_issues": [
+      "direct_lake",
+      "vorder_missing",
+      "framing_risk"
+    ]
+  },
+  {
+    "id": 13,
+    "name": "Financial \u2014 Budget Variance",
+    "domain": "FINANCIAL",
+    "key_issues": [
+      "near_limit_instructions",
+      "fuzzy_duplicates",
+      "slow_traces",
+      "low_va"
+    ]
+  },
+  {
+    "id": 14,
+    "name": "Financial \u2014 DRG Contribution",
+    "domain": "FINANCIAL",
+    "key_issues": [
+      "extreme_scope_bloat",
+      "outlier_traces",
+      "physician_visible",
+      "cu_throttling",
+      "zero_va"
+    ]
+  },
+  {
+    "id": 15,
+    "name": "Clinical Inpatient \u2014 Readmission Risk",
+    "domain": "CLINICAL_INPATIENT",
+    "key_issues": [
+      "everything_wrong"
+    ]
+  },
+  {
+    "id": 16,
+    "name": "Clinical Inpatient \u2014 Mortality Review",
+    "domain": "CLINICAL_INPATIENT",
+    "key_issues": [
+      "physician_visible",
+      "high_retries",
+      "governance"
+    ]
+  },
+  {
+    "id": 17,
+    "name": "Revenue Cycle \u2014 Charge Capture",
+    "domain": "REVENUE_CYCLE",
+    "key_issues": [
+      "well_configured",
+      "minimal_issues"
+    ]
+  },
+  {
+    "id": 18,
+    "name": "Operational \u2014 Bed Management",
+    "domain": "OPERATIONAL",
+    "key_issues": [
+      "direct_lake",
+      "cu_throttling",
+      "schema_mismatch",
+      "execution_dominant"
+    ]
+  },
+  {
+    "id": 19,
+    "name": "Patient Experience \u2014 Survey Response",
+    "domain": "PATIENT_EXPERIENCE",
+    "key_issues": [
+      "nl2dax_contamination",
+      "measure_not_found",
+      "empty_results"
+    ]
+  },
+  {
+    "id": 20,
+    "name": "Workforce \u2014 Nursing Turnover",
+    "domain": "WORKFORCE",
+    "key_issues": [
+      "all_execution_rules",
+      "scope_bloat",
+      "instruction_bloat",
+      "hidden_columns",
+      "cu_throttling"
+    ]
+  }
+]

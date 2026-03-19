@@ -36,6 +36,9 @@ export default function TracesTab({ session }) {
     : filter === 'failed' ? traces.filter(t => t.pass_fail === 'fail')
     : traces;
 
+  // CU metrics from session (collected from cu_metrics table)
+  const cuMetrics = session.cuMetrics || null;
+
   if (!session.collectionComplete) {
     return (
       <div className="glass fade-in" style={{ padding: 48, textAlign: 'center' }}>
@@ -44,15 +47,18 @@ export default function TracesTab({ session }) {
     );
   }
 
+  const avgLatency = traces.length > 0 ? traces.reduce((s, t) => s + t.total_ms, 0) / traces.length : 0;
+  const retryCount = traces.filter(t => t.retries > 0).length;
+
   return (
     <div className="fade-in">
       {/* Summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
         {[
           { label: 'Domain', value: DOMAIN_LABELS[session.domain] || session.domain || '—', color: 'var(--blue)' },
-          { label: 'Avg Latency', value: traces.length > 0 ? `${(traces.reduce((s, t) => s + t.total_ms, 0) / traces.length / 1000).toFixed(1)}s` : '—', color: 'var(--teal)' },
+          { label: 'Avg Latency', value: avgLatency > 0 ? `${(avgLatency / 1000).toFixed(1)}s` : '—', color: 'var(--teal)' },
           { label: 'Traces', value: traces.length, color: 'var(--text)' },
-          { label: 'Retries', value: traces.filter(t => t.retries > 0).length, color: traces.filter(t => t.retries > 0).length > 0 ? 'var(--amber)' : 'var(--green)' },
+          { label: 'Retries', value: retryCount, color: retryCount > 0 ? 'var(--amber)' : 'var(--green)' },
         ].map(card => (
           <div key={card.label} className="glass metric-card">
             <div className="value" style={{ color: card.color }}>{card.value}</div>
@@ -60,6 +66,60 @@ export default function TracesTab({ session }) {
           </div>
         ))}
       </div>
+
+      {/* CU Cost Correlation */}
+      {cuMetrics && (
+        <div className="glass" style={{ padding: 16, marginBottom: 20 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: 'var(--teal)' }}>
+            Capacity Unit (CU) Correlation
+          </h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cyan)', fontFamily: 'var(--font-mono)' }}>
+                {cuMetrics.ai_cu_28d != null ? cuMetrics.ai_cu_28d.toLocaleString() : '—'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>AI CU (28d)</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--blue)', fontFamily: 'var(--font-mono)' }}>
+                {cuMetrics.query_cu_28d != null ? cuMetrics.query_cu_28d.toLocaleString() : '—'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Query CU (28d)</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-mono)',
+                color: (cuMetrics.throttle_events || 0) > 50 ? 'var(--red)' : (cuMetrics.throttle_events || 0) > 10 ? 'var(--amber)' : 'var(--green)' }}>
+                {cuMetrics.throttle_events != null ? cuMetrics.throttle_events : '—'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Throttle Events</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--font-mono)' }}>
+                {cuMetrics.p50_ms != null ? `${(cuMetrics.p50_ms / 1000).toFixed(1)}s` : '—'}
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}> / </span>
+                {cuMetrics.p95_ms != null ? `${(cuMetrics.p95_ms / 1000).toFixed(1)}s` : '—'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>P50 / P95 Latency</div>
+            </div>
+          </div>
+          {/* CU-Latency correlation indicator */}
+          {cuMetrics.throttle_events > 0 && avgLatency > 15000 && (
+            <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.08)', borderRadius: 6, border: '1px solid rgba(239,68,68,0.2)' }}>
+              <span style={{ fontSize: 12, color: 'var(--red)' }}>
+                High CU throttling ({cuMetrics.throttle_events} events) is correlating with elevated latency ({(avgLatency / 1000).toFixed(1)}s avg).
+                Consider increasing capacity or optimizing high-CU queries.
+              </span>
+            </div>
+          )}
+          {cuMetrics.throttle_events === 0 && avgLatency > 20000 && (
+            <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(245,158,11,0.08)', borderRadius: 6, border: '1px solid rgba(245,158,11,0.2)' }}>
+              <span style={{ fontSize: 12, color: 'var(--amber)' }}>
+                No CU throttling detected — latency is driven by agent configuration (schema scope, instructions, routing) not capacity.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
