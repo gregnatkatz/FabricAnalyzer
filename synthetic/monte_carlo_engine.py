@@ -80,7 +80,7 @@ def run_monte_carlo(db_path, findings=None, behavioral_evidence=None, n_iteratio
     Args:
         db_path: Path to SQLite database with traces
         findings: List of findings (for calibration)
-        behavioral_evidence: Behavioral profile JSON string
+        behavioral_evidence: Behavioral profile JSON string or dict
         n_iterations: Number of simulation iterations (default 500)
         active_fixes: List of fix keys to simulate (default: all)
     
@@ -89,6 +89,17 @@ def run_monte_carlo(db_path, findings=None, behavioral_evidence=None, n_iteratio
     """
     import sqlite3
     
+    # Reconstruct BehavioralProfile for calibration if available
+    profile = None
+    if behavioral_evidence:
+        try:
+            from agents.adversarial_probe import BehavioralProfile
+            bp_data = json.loads(behavioral_evidence) if isinstance(behavioral_evidence, str) else behavioral_evidence
+            if bp_data:
+                profile = BehavioralProfile.from_dict(bp_data)
+        except Exception:
+            pass
+
     db = sqlite3.connect(db_path)
     db.row_factory = sqlite3.Row
     traces = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
@@ -149,6 +160,17 @@ def run_monte_carlo(db_path, findings=None, behavioral_evidence=None, n_iteratio
             'confidence': _confidence_from_variance(fix_averages),
         }
 
+    # Calibration adjustments from BehavioralProfile
+    calibration = {}
+    if profile:
+        calibration = {
+            'retry_alpha': profile.get_retry_reduction_alpha(),
+            'routing_alpha': profile.get_routing_reduction_alpha(),
+            'governance_risk': profile.get_governance_risk_score(),
+            'topn_alpha': profile.get_topn_reduction_alpha(),
+            'outlier_severity': profile.get_outlier_severity()[0],
+        }
+
     result = {
         'n_iterations': n_iterations,
         'n_traces': len(traces),
@@ -172,9 +194,100 @@ def run_monte_carlo(db_path, findings=None, behavioral_evidence=None, n_iteratio
             'avg_stddev': round(_stddev(all_averages)),
             'p95_stddev': round(_stddev(all_p95s)),
         },
+        'calibration': calibration,
     }
 
+    # Persist to SQLite monte_carlo_results table
+    _persist_results(db_path, result)
+
     return result
+
+
+def _persist_results(db_path, result):
+    """Write Monte Carlo results to the monte_carlo_results SQLite table."""
+    import sqlite3
+    try:
+        db = sqlite3.connect(db_path)
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS monte_carlo_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_at TEXT DEFAULT (datetime('now')),
+                n_iterations INTEGER,
+                n_traces INTEGER,
+                active_fixes TEXT,
+                baseline_avg_ms INTEGER,
+                baseline_p95_ms INTEGER,
+                projected_p10 INTEGER,
+                projected_p50 INTEGER,
+                projected_p90 INTEGER,
+                outlier_p10 INTEGER,
+                outlier_p50 INTEGER,
+                outlier_p90 INTEGER,
+                avg_stddev INTEGER,
+                p95_stddev INTEGER,
+                per_fix_json TEXT,
+                calibration_json TEXT,
+                reduction_pct REAL,
+                confidence TEXT,
+                pass_rate_before REAL,
+                pass_rate_after REAL,
+                fix_instruction_trim_p50 INTEGER,
+                fix_schema_scope_p50 INTEGER,
+                fix_routing_rules_p50 INTEGER,
+                fix_verified_answers_p50 INTEGER,
+                fix_topn_guard_p50 INTEGER,
+                fix_measure_dedup_p50 INTEGER,
+                fix_vorder_p50 INTEGER,
+                fix_physician_gov_p50 INTEGER
+            )
+        ''')
+
+        baseline_avg = result['baseline']['avg_ms']
+        projected_p50 = result['projected']['p50']
+        reduction_pct = round((baseline_avg - projected_p50) / max(baseline_avg, 1) * 100, 1)
+
+        # Overall confidence from variance
+        cv = result['variance_record']['avg_stddev'] / max(projected_p50, 1)
+        confidence = 'HIGH' if cv < 0.05 else 'MEDIUM' if cv < 0.15 else 'LOW'
+
+        per_fix = result.get('per_fix', {})
+
+        db.execute('''
+            INSERT INTO monte_carlo_results (
+                n_iterations, n_traces, active_fixes,
+                baseline_avg_ms, baseline_p95_ms,
+                projected_p10, projected_p50, projected_p90,
+                outlier_p10, outlier_p50, outlier_p90,
+                avg_stddev, p95_stddev,
+                per_fix_json, calibration_json,
+                reduction_pct, confidence,
+                fix_instruction_trim_p50, fix_schema_scope_p50,
+                fix_routing_rules_p50, fix_verified_answers_p50,
+                fix_topn_guard_p50, fix_measure_dedup_p50,
+                fix_vorder_p50, fix_physician_gov_p50
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            result['n_iterations'], result['n_traces'],
+            json.dumps(result['active_fixes']),
+            result['baseline']['avg_ms'], result['baseline']['p95_ms'],
+            result['projected']['p10'], result['projected']['p50'], result['projected']['p90'],
+            result['outlier']['p10'], result['outlier']['p50'], result['outlier']['p90'],
+            result['variance_record']['avg_stddev'], result['variance_record']['p95_stddev'],
+            json.dumps(per_fix), json.dumps(result.get('calibration', {})),
+            reduction_pct, confidence,
+            per_fix.get('instruction_trim', {}).get('p50', 0),
+            per_fix.get('schema_scope', {}).get('p50', 0),
+            per_fix.get('routing_rules', {}).get('p50', 0),
+            per_fix.get('verified_answers', {}).get('p50', 0),
+            per_fix.get('topn_guard', {}).get('p50', 0),
+            per_fix.get('measure_dedup', {}).get('p50', 0),
+            per_fix.get('vorder', {}).get('p50', 0),
+            per_fix.get('physician_gov', {}).get('p50', 0),
+        ))
+        db.commit()
+        db.close()
+    except Exception as e:
+        print(f'Monte Carlo persist error: {e}', file=sys.stderr)
 
 
 def _stddev(values):

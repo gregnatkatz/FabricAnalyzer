@@ -67,46 +67,106 @@ export default function ReportView({ session: propSession }) {
         </p>
       </div>
 
-      {/* Section 3: Root Cause Ranking */}
+      {/* Section 3: Root Cause Ranking (by latency impact — biggest offenders first) */}
       <div style={{ marginBottom: 30 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Root Cause Ranking</h2>
+        <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Root Cause Ranking — Biggest Latency Offenders</h2>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>
+          Findings ranked by estimated latency impact (ms). Top offenders should be remediated first.
+        </p>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: '2px solid #e0e0e0', textAlign: 'left' }}>
               <th style={{ padding: '8px 12px' }}>#</th>
               <th style={{ padding: '8px 12px' }}>Issue</th>
+              <th style={{ padding: '8px 12px' }}>Affected Object</th>
               <th style={{ padding: '8px 12px' }}>Severity</th>
               <th style={{ padding: '8px 12px' }}>Impact</th>
             </tr>
           </thead>
           <tbody>
-            {findings.sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0)).map((f, i) => (
+            {[...findings].sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0)).map((f, i) => (
               <tr key={i} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                <td style={{ padding: '6px 12px' }}>{i + 1}</td>
+                <td style={{ padding: '6px 12px', fontWeight: 700, color: i < 3 ? '#d32f2f' : i < 6 ? '#f57c00' : '#333' }}>{i + 1}</td>
                 <td style={{ padding: '6px 12px' }}>{f.issue}</td>
+                <td style={{ padding: '6px 12px', color: '#0288d1', fontSize: 12 }}>{f.affected_object || '—'}</td>
                 <td style={{ padding: '6px 12px', color: f.severity === 'CRITICAL' ? '#d32f2f' : f.severity === 'HIGH' ? '#f57c00' : '#1976d2' }}>
                   {f.severity}
                 </td>
-                <td style={{ padding: '6px 12px' }}>{f.impact_ms ? `${f.impact_ms}ms` : '—'}</td>
+                <td style={{ padding: '6px 12px', fontWeight: 600 }}>{f.impact_ms ? `${(f.impact_ms / 1000).toFixed(1)}s` : '—'}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      {/* Section 4: All Agent Findings */}
+      {/* Section 4: Detailed Findings with Explanations & Resolutions */}
       <div style={{ marginBottom: 30 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>All Agent Findings</h2>
-        {findings.map((f, i) => (
-          <div key={i} style={{ marginBottom: 12, padding: '12px 16px', border: '1px solid #e0e0e0', borderRadius: 6 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <strong>{f.issue}</strong>
-              <span style={{ color: f.severity === 'CRITICAL' ? '#d32f2f' : f.severity === 'HIGH' ? '#f57c00' : '#1976d2' }}>
-                {f.severity}
-              </span>
+        <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Detailed Findings & Resolutions</h2>
+        {[...findings].sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0)).map((f, i) => (
+          <div key={i} style={{ marginBottom: 16, padding: '14px 18px', border: '1px solid #e0e0e0', borderRadius: 6, pageBreakInside: 'avoid' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                  <span style={{ background: i < 3 ? '#ffebee' : i < 6 ? '#fff3e0' : '#e3f2fd', color: i < 3 ? '#d32f2f' : i < 6 ? '#f57c00' : '#1976d2', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>
+                    #{i + 1}
+                  </span>
+                  <strong style={{ fontSize: 14 }}>{f.issue}</strong>
+                </div>
+                {f.affected_object && (
+                  <p style={{ fontSize: 12, color: '#0288d1', margin: '4px 0' }}>{f.affected_object}</p>
+                )}
+              </div>
+              <div style={{ textAlign: 'right', minWidth: 100 }}>
+                <span style={{ color: f.severity === 'CRITICAL' ? '#d32f2f' : f.severity === 'HIGH' ? '#f57c00' : '#1976d2', fontWeight: 600 }}>
+                  {f.severity}
+                </span>
+                {f.impact_ms > 0 && <div style={{ fontSize: 12, fontWeight: 600, color: '#d32f2f' }}>{(f.impact_ms / 1000).toFixed(1)}s impact</div>}
+              </div>
             </div>
-            {f.evidence && <p style={{ fontSize: 13, color: '#666', marginTop: 4 }}>Evidence: {f.evidence}</p>}
-            {f.fix && <p style={{ fontSize: 13, color: '#2e7d32', marginTop: 4 }}>Fix: {f.fix}</p>}
+
+            {/* Affected tables */}
+            {f.affected_tables && f.affected_tables.length > 0 && (
+              <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {f.affected_tables.map((t, j) => (
+                  <span key={j} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 3, background: '#e0f7fa', color: '#00838f', border: '1px solid #b2ebf2' }}>
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Explanation */}
+            {f.explanation && (
+              <div style={{ marginTop: 8, padding: '8px 12px', background: '#fafafa', borderRadius: 4, border: '1px solid #f0f0f0' }}>
+                <p style={{ fontSize: 12, fontWeight: 600, color: '#555', marginBottom: 4 }}>EXPLANATION</p>
+                <p style={{ fontSize: 13, color: '#333', lineHeight: 1.6, margin: 0 }}>{f.explanation}</p>
+              </div>
+            )}
+
+            {/* Latency contribution */}
+            {f.latency_contribution && (
+              <div style={{ marginTop: 6, padding: '6px 10px', background: '#ffebee', borderRadius: 4, border: '1px solid #ffcdd2' }}>
+                <p style={{ fontSize: 12, color: '#c62828', margin: 0 }}><strong>Latency:</strong> {f.latency_contribution}</p>
+              </div>
+            )}
+
+            {/* Evidence */}
+            {f.evidence && <p style={{ fontSize: 12, color: '#666', marginTop: 6 }}><strong>Evidence:</strong> {f.evidence}</p>}
+
+            {/* Fix recommendation */}
+            {f.fix && <p style={{ fontSize: 12, color: '#2e7d32', marginTop: 4 }}><strong>Fix:</strong> {f.fix}</p>}
+
+            {/* Resolution steps */}
+            {f.resolution_steps && f.resolution_steps.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <p style={{ fontSize: 12, fontWeight: 600, color: '#555', marginBottom: 4 }}>RESOLUTION STEPS</p>
+                <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12, color: '#333', lineHeight: 1.7 }}>
+                  {f.resolution_steps.map((step, j) => (
+                    <li key={j}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+            )}
           </div>
         ))}
       </div>

@@ -389,6 +389,68 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
         else:
             results['remediation'] = {'artifacts': {}}
 
+    # Agent 9: Validation (Phi-4 Reasoning)
+    if agent_filter in ('all', 'validation'):
+        print('[pipeline] Running Agent 9: Validation', file=sys.stderr)
+        # Validation runs as a post-pipeline assessment of fix effectiveness
+        # It uses the Monte Carlo results + synthesis to produce a final verdict
+        mc_result = results.get('monte_carlo', {})
+        synthesis_result = results.get('synthesis', {})
+        remediation_result = results.get('remediation', {})
+
+        if proxy_url and (mc_result or synthesis_result):
+            # Build validation context from pipeline results
+            baseline_results = json.dumps({
+                'avg_ms': mc_result.get('baseline', {}).get('avg_ms', 0),
+                'p95_ms': mc_result.get('baseline', {}).get('p95_ms', 0),
+                'finding_count': len(all_findings),
+            })
+            postfix_results = json.dumps({
+                'projected_p50': mc_result.get('projected', {}).get('p50', 0),
+                'projected_p90': mc_result.get('projected', {}).get('p90', 0),
+                'per_fix': mc_result.get('per_fix', {}),
+            })
+            delta_analysis = json.dumps({
+                'reduction_pct': round(
+                    (mc_result.get('baseline', {}).get('avg_ms', 1) - mc_result.get('projected', {}).get('p50', 0))
+                    / max(mc_result.get('baseline', {}).get('avg_ms', 1), 1) * 100, 1
+                ) if mc_result.get('baseline') else 0,
+                'demo_readiness': synthesis_result.get('demo_readiness', 'UNKNOWN'),
+            })
+            resolution_status = json.dumps({
+                'critical_count': len([f for f in all_findings if f.get('severity') == 'CRITICAL']),
+                'high_count': len([f for f in all_findings if f.get('severity') == 'HIGH']),
+                'has_artifacts': bool(remediation_result.get('artifacts')),
+            })
+
+            template_vars = {
+                'fixes_applied': json.dumps(mc_result.get('active_fixes', [])),
+                'baseline_results': baseline_results,
+                'postfix_results': postfix_results,
+                'delta_analysis': delta_analysis,
+                'resolution_status': resolution_status,
+            }
+            llm_findings, validation_data = run_agent_with_llm(
+                'validation', 'validation', template_vars, proxy_url, chromadb_path, session_id,
+            )
+            results['validation'] = validation_data
+            all_findings.extend(llm_findings)
+        else:
+            # Fallback validation without LLM — produce deterministic summary
+            mc_baseline = mc_result.get('baseline', {}).get('avg_ms', 0)
+            mc_projected = mc_result.get('projected', {}).get('p50', 0)
+            reduction = round((mc_baseline - mc_projected) / max(mc_baseline, 1) * 100, 1) if mc_baseline else 0
+
+            results['validation'] = {
+                'summary': f'Pipeline identified {len(all_findings)} findings. '
+                           f'Monte Carlo projects {reduction}% latency reduction (P50: {mc_projected}ms). '
+                           f'{len([f for f in all_findings if f.get("severity") == "CRITICAL"])} critical issues.',
+                'effective_fixes': [k for k, v in mc_result.get('per_fix', {}).items()
+                                    if v.get('reduction_ms', 0) > 500],
+                'ineffective_fixes': [k for k, v in mc_result.get('per_fix', {}).items()
+                                      if v.get('reduction_ms', 0) < 100],
+            }
+
     # Embed all findings in ChromaDB
     embed_findings(chromadb_path, all_findings, session_id)
 
@@ -399,6 +461,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
         'synthesis': results.get('synthesis', {}),
         'remediation': results.get('remediation', {}),
         'monte_carlo': results.get('monte_carlo', {}),
+        'validation': results.get('validation', {}),
         'agent_results': {k: {'finding_count': len(v.get('findings', []))} for k, v in results.items()},
     }
 

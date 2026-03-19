@@ -61,6 +61,63 @@ class BehavioralProfile:
     def get_avg_kpi_ms(self):
         return 15000  # Default baseline — calibrated from real data
 
+    def get_retry_reduction_alpha(self):
+        """Calibration factor for retry-related latency reduction.
+        Higher values = more confident that fixing retries will reduce latency.
+        Based on ratio of retry traces to total traces and retry severity."""
+        if self.total_probes == 0:
+            return 0.0
+        retry_rate = len(self.retry_records) / max(self.total_probes, 1)
+        avg_retries = self.total_retries / max(len(self.retry_records), 1)
+        # Alpha scales 0.0–1.0: high retry rate + high avg retries = strong signal
+        return min(1.0, retry_rate * 0.5 + min(avg_retries / 5.0, 0.5))
+
+    def get_routing_reduction_alpha(self):
+        """Calibration factor for routing-rule latency reduction.
+        Based on number and severity of routing gaps detected."""
+        if not self.routing_gaps:
+            return 0.0
+        total_gap_retries = sum(g['retries'] for g in self.routing_gaps.values())
+        # Scale by gap count and severity
+        return min(1.0, len(self.routing_gaps) * 0.15 + total_gap_retries * 0.05)
+
+    def get_governance_risk_score(self):
+        """Risk score for governance gaps (0.0 = clean, 1.0 = critical).
+        Governance gaps don't directly affect latency but block deployment."""
+        if not self.governance_gaps:
+            return 0.0
+        return min(1.0, len(self.governance_gaps) * 0.25)
+
+    def get_topn_reduction_alpha(self):
+        """Calibration factor for TOPN guard latency reduction.
+        Based on number of cross-entity queries missing TOPN."""
+        if not self.topn_gaps:
+            return 0.0
+        return min(1.0, len(self.topn_gaps) * 0.2)
+
+    def get_outlier_severity(self):
+        """Outlier severity score based on worst-case latency.
+        Returns tuple of (score, worst_ms)."""
+        if not self.outliers:
+            return 0.0, 0
+        worst_ms = max(o['total_ms'] for o in self.outliers)
+        # Score: 0.5 at 45s, 1.0 at 90s+
+        score = min(1.0, worst_ms / 90000)
+        return score, worst_ms
+
+    @classmethod
+    def from_dict(cls, data):
+        """Reconstruct BehavioralProfile from a dict (e.g., from JSON)."""
+        profile = cls()
+        profile.total_probes = data.get('total_probes', 0)
+        profile.total_retries = data.get('total_retries', 0)
+        profile.retry_records = data.get('retry_records', [])
+        profile.governance_gaps = data.get('governance_gaps', [])
+        profile.topn_gaps = data.get('topn_gaps', [])
+        profile.outliers = data.get('outliers', [])
+        profile.routing_gaps = data.get('routing_gaps', {})
+        return profile
+
     def to_dict(self):
         return {
             'total_probes': self.total_probes,

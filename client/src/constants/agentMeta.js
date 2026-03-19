@@ -83,4 +83,5 @@ export const AGENT_ORDER = [
   'synthesis',
   'monte_carlo',
   'remediation',
+  'validation',
 ];

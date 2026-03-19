@@ -139,6 +139,7 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
       setStatus('Loading sample dataset...');
       setError('');
       const result = await loadSampleDataset();
+      const hasFindings = (result.findings || []).length > 0;
       updateSession({
         connected: true,
         sampleMode: true,
@@ -148,7 +149,9 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
         domain: result.domain || 'CLINICAL_INPATIENT',
         traces: result.traces || [],
         cuMetrics: result.cuMetrics || null,
+        findings: result.findings || [],
         collectionComplete: true,
+        analysisComplete: hasFindings,
       });
       setStatus('Sample dataset loaded successfully');
       onNavigate('traces');
