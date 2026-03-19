@@ -13,7 +13,7 @@ export default function ArtifactsTab({ session }) {
     try {
       setExporting(true);
       setError('');
-      const blob = await exportPdf(session.sessionId);
+      const blob = await exportPdf(session);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

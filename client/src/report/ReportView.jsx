@@ -1,8 +1,19 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { simulate } from '../simulation/mathModel';
 import { FIX_KEYS } from '../constants/fixes';
 
-export default function ReportView({ session }) {
+export default function ReportView({ session: propSession }) {
+  // Support both prop-based session (normal route) and injected data (Puppeteer PDF)
+  const [injectedSession, setInjectedSession] = useState(null);
+
+  useEffect(() => {
+    // Check if Puppeteer injected report data via window.__REPORT_DATA__
+    if (window.__REPORT_DATA__) {
+      setInjectedSession(window.__REPORT_DATA__);
+    }
+  }, []);
+
+  const session = injectedSession || propSession || {};
   const findings = session.findings || [];
   const vr = session.validationResults;
   const cuMetrics = session.cuMetrics || null;

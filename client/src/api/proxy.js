@@ -76,11 +76,11 @@ export async function resetSession(scope, sessionId) {
   });
 }
 
-export async function exportPdf(sessionId) {
+export async function exportPdf(sessionData) {
   const res = await fetch(`${API_BASE}/pdf`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify(sessionData),
   });
   if (!res.ok) throw new Error('PDF export failed');
   return res.blob();

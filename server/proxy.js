@@ -486,14 +486,25 @@ except Exception as e:
 // PDF export
 app.post('/api/pdf', async (req, res) => {
   try {
+    const sessionData = req.body || {};
     const puppeteer = await import('puppeteer');
     const browser = await puppeteer.default.launch({
       headless: 'new',
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
     const page = await browser.newPage();
+
+    // Inject session data into the page before React renders
+    await page.evaluateOnNewDocument((data) => {
+      window.__REPORT_DATA__ = data;
+    }, sessionData);
+
     await page.goto('http://localhost:5173/report', { waitUntil: 'networkidle0', timeout: 30000 });
     await page.waitForSelector('#report-ready', { timeout: 10000 });
+
+    // Wait for React to re-render with injected data
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 500)));
+
     const pdf = await page.pdf({
       format: 'A4',
       margin: { top: '20mm', bottom: '20mm', left: '15mm', right: '15mm' },
