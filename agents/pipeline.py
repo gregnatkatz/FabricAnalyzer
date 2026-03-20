@@ -41,28 +41,65 @@ def query_chromadb(chromadb_path, collection_name, query_text, n_results=5):
         return []
 
 
+# Reasoning models need higher token limits because they consume tokens for internal reasoning
+REASONING_MODELS = {'gpt-5.4-pro', 'o1', 'o3-pro', 'o1-pro'}
+DEFAULT_FALLBACK_MODEL = 'DeepSeek-V3.2-Speciale'
+
+
 def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override=None):
-    """Call LLM via Express proxy with optional per-agent model override."""
+    """Call LLM via Express proxy with optional per-agent model override.
+    For reasoning models (gpt-5.4-pro), uses higher token limits and retries with fallback."""
     if not REQUESTS_AVAILABLE:
         return None
-    try:
-        payload = {'system': system_prompt, 'userMsg': user_msg, 'maxTokens': max_tokens}
-        if model_override:
-            payload['modelOverride'] = model_override
-        resp = requests.post(
-            f'{proxy_url}/api/agent',
-            json=payload,
-            timeout=180,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return data.get('content', '')
-        else:
-            print(f'LLM error: {resp.status_code} {resp.text}', file=sys.stderr)
+
+    # Reasoning models need somewhat higher max_tokens because reasoning consumes tokens
+    # But don't go too high or the model takes too long and times out
+    effective_max_tokens = max_tokens
+    if model_override and model_override in REASONING_MODELS:
+        effective_max_tokens = max(max_tokens, 3000)  # Moderate increase for reasoning
+
+    models_to_try = [model_override] if model_override else [None]
+    # Add fallback for reasoning models that may hit server errors
+    if model_override and model_override in REASONING_MODELS:
+        models_to_try.append(DEFAULT_FALLBACK_MODEL)
+
+    for attempt, model in enumerate(models_to_try):
+        try:
+            tokens = effective_max_tokens if (model and model in REASONING_MODELS) else max_tokens
+            payload = {'system': system_prompt, 'userMsg': user_msg, 'maxTokens': tokens}
+            if model:
+                payload['modelOverride'] = model
+            label = f' (model: {model}, attempt {attempt+1})' if model else ''
+            print(f'[pipeline] LLM call{label}', file=sys.stderr)
+            # Shorter timeout for reasoning models since we have DeepSeek fallback
+            req_timeout = 50 if (model and model in REASONING_MODELS) else 180
+            resp = requests.post(
+                f'{proxy_url}/api/agent',
+                json=payload,
+                timeout=req_timeout,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get('content', '')
+                if content and len(content) > 10:
+                    return content
+                elif attempt < len(models_to_try) - 1:
+                    print(f'[pipeline] Empty response from {model}, falling back to {models_to_try[attempt+1]}', file=sys.stderr)
+                    continue
+                return content  # Return even if empty on last attempt
+            else:
+                print(f'LLM error: {resp.status_code} {resp.text}', file=sys.stderr)
+                if attempt < len(models_to_try) - 1:
+                    print(f'[pipeline] Retrying with fallback model {models_to_try[attempt+1]}', file=sys.stderr)
+                    continue
+                return None
+        except Exception as e:
+            print(f'LLM call failed: {e}', file=sys.stderr)
+            if attempt < len(models_to_try) - 1:
+                print(f'[pipeline] Retrying with fallback model {models_to_try[attempt+1]}', file=sys.stderr)
+                continue
             return None
-    except Exception as e:
-        print(f'LLM call failed: {e}', file=sys.stderr)
-        return None
+    return None
 
 
 def parse_llm_json(content):

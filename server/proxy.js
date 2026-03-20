@@ -138,7 +138,7 @@ app.post('/api/agent', async (req, res) => {
         ],
         max_output_tokens: maxTokens,
       };
-      console.log('[LLM] Using Responses API for reasoning model:', model);
+      console.log('[LLM] Using Responses API for reasoning model:', model, 'maxTokens:', maxTokens);
     } else {
       // Standard Chat Completions API
       if (endpoint.includes('openai.azure.com')) {
@@ -172,8 +172,9 @@ app.post('/api/agent', async (req, res) => {
     writeFileSync(tmpBodyFile, JSON.stringify(body));
 
     try {
-      const curlCmd = `curl -s -m 180 -X POST "${llmUrl}" -H "Content-Type: application/json" ${authHeader} -d @${tmpBodyFile}`;
-      const result = execSync(curlCmd, { encoding: 'utf8', timeout: 180000 });
+      const curlTimeout = useResponsesApi ? 45 : 180;  // Reasoning models: 45s timeout, pipeline has DeepSeek fallback
+      const curlCmd = `curl -s -m ${curlTimeout} -X POST "${llmUrl}" -H "Content-Type: application/json" ${authHeader} -d @${tmpBodyFile}`;
+      const result = execSync(curlCmd, { encoding: 'utf8', timeout: curlTimeout * 1000 + 5000 });
       console.log('[LLM] Got response, length:', result.length);
 
       const data = JSON.parse(result);
@@ -185,8 +186,29 @@ app.post('/api/agent', async (req, res) => {
       // Extract content based on API type
       let content;
       if (useResponsesApi) {
-        // Responses API: output[].content[].text
-        content = data.output?.find(o => o.type === 'message')?.content?.find(c => c.type === 'output_text')?.text || '';
+        // Responses API: output[].content[].text — try multiple extraction paths
+        console.log('[LLM] Responses API output types:', data.output?.map(o => o.type));
+        const msgOutput = data.output?.find(o => o.type === 'message');
+        if (msgOutput) {
+          console.log('[LLM] Message output content types:', msgOutput.content?.map(c => c.type));
+          content = msgOutput.content?.find(c => c.type === 'output_text')?.text || '';
+        }
+        // Fallback: try output_text at top level or text field
+        if (!content) {
+          for (const o of (data.output || [])) {
+            if (o.type === 'message' && o.content) {
+              for (const c of o.content) {
+                if (c.text) { content = c.text; break; }
+              }
+            }
+            if (content) break;
+          }
+        }
+        // Fallback: if status is 'completed' but no message output, check for text in any output
+        if (!content && data.output_text) {
+          content = data.output_text;
+        }
+        content = content || '';
       } else {
         // Chat Completions API: choices[].message.content
         content = data.choices?.[0]?.message?.content || '';
