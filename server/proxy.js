@@ -24,21 +24,9 @@ const PYTHON_PATH = process.env.PYTHON_PATH || 'python3';
 // Per-model endpoint configuration — supports routing different models to different Azure AI endpoints
 // If a model has its own endpoint env var, use that; otherwise fall back to default LLM_ENDPOINT
 const MODEL_ENDPOINTS = {
-  'gpt-5.4-pro': {
-    endpoint: process.env.LLM_ENDPOINT_GPT || process.env.LLM_ENDPOINT,
-    apiKey: process.env.LLM_API_KEY_GPT || process.env.LLM_API_KEY,
-  },
-  'grok-4-1-fast-reasoning': {
-    endpoint: process.env.LLM_ENDPOINT_GROK || process.env.LLM_ENDPOINT,
-    apiKey: process.env.LLM_API_KEY_GROK || process.env.LLM_API_KEY,
-  },
   'DeepSeek-V3.2-Speciale': {
     endpoint: process.env.LLM_ENDPOINT_DEEPSEEK || process.env.LLM_ENDPOINT,
     apiKey: process.env.LLM_API_KEY_DEEPSEEK || process.env.LLM_API_KEY,
-  },
-  'Phi-4-reasoning': {
-    endpoint: process.env.LLM_ENDPOINT_PHI || process.env.LLM_ENDPOINT,
-    apiKey: process.env.LLM_API_KEY_PHI || process.env.LLM_API_KEY,
   },
   'DeepSeek-V3.2': {
     endpoint: process.env.LLM_ENDPOINT_DEEPSEEK || process.env.LLM_ENDPOINT,
@@ -104,10 +92,8 @@ app.get('/api/health', (req, res) => {
 app.get('/api/models', (req, res) => {
   res.json({
     models: [
-      { id: 'grok-4-1-fast-reasoning', name: 'Grok 4.1 Fast Reasoning', provider: 'Azure AI (xAI)', authMethods: ['api-key'] },
-      { id: 'DeepSeek-V3.2-Speciale', name: 'DeepSeek V3.2 Speciale', provider: 'Azure AI (DeepSeek)', authMethods: ['api-key'] },
+      { id: 'DeepSeek-V3.2-Speciale', name: 'DeepSeek V3.2 Speciale', provider: 'Azure AI (DeepSeek)', authMethods: ['api-key'], default: true },
       { id: 'DeepSeek-V3.2', name: 'DeepSeek V3.2', provider: 'Azure AI (DeepSeek)', authMethods: ['api-key'] },
-      { id: 'gpt-5.4-pro', name: 'GPT-5.4 Pro (Reasoning)', provider: 'Azure OpenAI', authMethods: ['api-key'], note: 'Uses responses API, not chat completions' },
     ],
     defaultModel: process.env.LLM_MODEL,
     authMode: LLM_AUTH_MODE,
@@ -1322,22 +1308,56 @@ tables_list = data.get('tables', [])
 traces_list = data.get('traces', [])
 
 # If no traces provided but we have instructions, generate test traces
-# based on the agent's known behavior patterns
+# based on the agent's known behavior patterns and domain
 import random
 if not traces_list and instructions:
     random.seed(42)
-    test_questions = [
-        {"question": "What is the average length of stay by department?", "category": "aggregation", "responseTimeSec": 36},
-        {"question": "How many patients are in the system?", "category": "count", "responseTimeSec": 13},
-        {"question": "Show total charges by payer for surgical patients", "category": "billing", "responseTimeSec": 16},
-        {"question": "List all lab results with abnormal flags for patients admitted in January", "category": "filtering", "responseTimeSec": 28},
-        {"question": "What medications are prescribed most frequently by department?", "category": "aggregation", "responseTimeSec": 42},
-        {"question": "Show readmission rates by DRG code", "category": "aggregation", "responseTimeSec": 31},
-        {"question": "What is the average vital sign values for ICU patients?", "category": "aggregation", "responseTimeSec": 38},
-        {"question": "List patients with LOS greater than 7 days and their total charges", "category": "filtering", "responseTimeSec": 45},
-        {"question": "Show discharge disposition breakdown by department", "category": "aggregation", "responseTimeSec": 22},
-        {"question": "What are the top 10 diagnoses by patient volume?", "category": "ranking", "responseTimeSec": 19},
-    ]
+    domain_hint = data.get('domain', '').lower()
+    instr_lower = instructions.lower()
+
+    # Detect domain from agent name, instructions, or explicit domain field
+    if domain_hint in ('supply_chain', 'procurement') or 'procurement' in instr_lower or 'vendor' in instr_lower or 'inventory' in instr_lower or 'supply' in instr_lower:
+        test_questions = [
+            {"question": "What is the total procurement spend by vendor this quarter?", "category": "aggregation", "responseTimeSec": 38},
+            {"question": "Show purchase order fill rates by category", "category": "aggregation", "responseTimeSec": 42},
+            {"question": "Which vendors have the highest contract non-compliance rates?", "category": "ranking", "responseTimeSec": 35},
+            {"question": "List all purchase orders over $50K that are pending approval", "category": "filtering", "responseTimeSec": 31},
+            {"question": "What is the average lead time by supplier region?", "category": "aggregation", "responseTimeSec": 44},
+            {"question": "Show inventory turnover ratio by warehouse location", "category": "aggregation", "responseTimeSec": 33},
+            {"question": "Which items are below reorder point and not on order?", "category": "filtering", "responseTimeSec": 47},
+            {"question": "What is the total spend by GL account for surgical supplies?", "category": "aggregation", "responseTimeSec": 29},
+            {"question": "Show vendor payment terms compliance by department", "category": "aggregation", "responseTimeSec": 36},
+            {"question": "List all contracts expiring in the next 90 days with renewal status", "category": "filtering", "responseTimeSec": 41},
+            {"question": "What is the price variance between contracted and actual unit costs?", "category": "aggregation", "responseTimeSec": 52},
+            {"question": "Show top 20 items by spend across all facilities", "category": "ranking", "responseTimeSec": 28},
+        ]
+    elif domain_hint in ('financial', 'finance') or 'budget' in instr_lower or 'revenue' in instr_lower or 'financial' in instr_lower:
+        test_questions = [
+            {"question": "What is the budget variance by cost center for Q3?", "category": "aggregation", "responseTimeSec": 34},
+            {"question": "Show revenue by payer mix for the last 12 months", "category": "aggregation", "responseTimeSec": 39},
+            {"question": "Which departments are over budget by more than 10%?", "category": "filtering", "responseTimeSec": 31},
+            {"question": "What is the net revenue per adjusted discharge by service line?", "category": "aggregation", "responseTimeSec": 45},
+            {"question": "Show accounts receivable aging by payer category", "category": "aggregation", "responseTimeSec": 37},
+            {"question": "List all denied claims over $10K with denial reason codes", "category": "filtering", "responseTimeSec": 42},
+            {"question": "What is the operating margin trend by quarter?", "category": "aggregation", "responseTimeSec": 33},
+            {"question": "Show FTE costs vs contract labor by department", "category": "aggregation", "responseTimeSec": 48},
+            {"question": "Which DRG codes have the highest cost-to-charge ratio?", "category": "ranking", "responseTimeSec": 36},
+            {"question": "What is the total write-off amount by category this fiscal year?", "category": "aggregation", "responseTimeSec": 29},
+        ]
+    else:
+        # Default: healthcare / clinical inpatient domain
+        test_questions = [
+            {"question": "What is the average length of stay by department?", "category": "aggregation", "responseTimeSec": 36},
+            {"question": "How many patients are in the system?", "category": "count", "responseTimeSec": 13},
+            {"question": "Show total charges by payer for surgical patients", "category": "billing", "responseTimeSec": 16},
+            {"question": "List all lab results with abnormal flags for patients admitted in January", "category": "filtering", "responseTimeSec": 28},
+            {"question": "What medications are prescribed most frequently by department?", "category": "aggregation", "responseTimeSec": 42},
+            {"question": "Show readmission rates by DRG code", "category": "aggregation", "responseTimeSec": 31},
+            {"question": "What is the average vital sign values for ICU patients?", "category": "aggregation", "responseTimeSec": 38},
+            {"question": "List patients with LOS greater than 7 days and their total charges", "category": "filtering", "responseTimeSec": 45},
+            {"question": "Show discharge disposition breakdown by department", "category": "aggregation", "responseTimeSec": 22},
+            {"question": "What are the top 10 diagnoses by patient volume?", "category": "ranking", "responseTimeSec": 19},
+        ]
     traces_list = test_questions
 
 from datetime import datetime
@@ -1397,11 +1417,22 @@ db.row_factory = sqlite3.Row
 traces_out = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
 db.close()
 
+# Detect domain for result
+detected_domain = data.get('domain', '')
+if not detected_domain:
+    il = instructions.lower()
+    if 'procurement' in il or 'vendor' in il or 'inventory' in il or 'supply' in il:
+        detected_domain = 'SUPPLY_CHAIN'
+    elif 'budget' in il or 'revenue' in il or 'financial' in il:
+        detected_domain = 'FINANCIAL'
+    else:
+        detected_domain = 'CLINICAL_INPATIENT'
+
 result = {
     'sessionId': data['sessionId'],
     'dbPath': data['dbPath'],
     'modelName': agent_name,
-    'domain': 'healthcare',
+    'domain': detected_domain,
     'traces': traces_out,
 }
 print(json.dumps(result))
