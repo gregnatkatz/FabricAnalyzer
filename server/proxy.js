@@ -32,6 +32,15 @@ const MODEL_ENDPOINTS = {
     endpoint: process.env.LLM_ENDPOINT_DEEPSEEK || process.env.LLM_ENDPOINT,
     apiKey: process.env.LLM_API_KEY_DEEPSEEK || process.env.LLM_API_KEY,
   },
+  'gpt-5.4-pro': {
+    endpoint: process.env.LLM_ENDPOINT_GPT54 || process.env.LLM_ENDPOINT,
+    apiKey: process.env.LLM_API_KEY_GPT54 || process.env.LLM_API_KEY,
+    useResponsesApi: true,  // reasoning model — uses /openai/responses instead of chat completions
+  },
+  'gpt-4o': {
+    endpoint: process.env.LLM_ENDPOINT_GPT4O || process.env.LLM_ENDPOINT,
+    apiKey: process.env.LLM_API_KEY_GPT4O || process.env.LLM_API_KEY,
+  },
 };
 
 function getModelConfig(modelId) {
@@ -109,47 +118,45 @@ app.post('/api/agent', async (req, res) => {
     const modelConfig = getModelConfig(model);
     const endpoint = modelConfig.endpoint;
     const apiKey = modelConfig.apiKey;
+    const useResponsesApi = modelConfig.useResponsesApi || false;
 
-    // Build Azure OpenAI compatible request
+    // Build URL and body based on API type (chat completions vs responses)
     let llmUrl;
-    if (endpoint.includes('openai.azure.com')) {
-      // Azure OpenAI: use deployments/{model} URL format
-      // Strip any trailing path like /openai/v1 to get the base
+    let body;
+
+    if (useResponsesApi) {
+      // Responses API for reasoning models (gpt-5.4-pro, o1, o3-pro, etc.)
       const base = endpoint.replace(/\/openai\/v1\/?$/, '').replace(/\/+$/, '');
-      llmUrl = `${base}/openai/deployments/${model}/chat/completions?api-version=2025-01-01-preview`;
+      llmUrl = `${base}/openai/responses?api-version=2025-03-01-preview`;
+      // Responses API uses 'input' array instead of 'messages', and 'max_output_tokens' instead of 'max_tokens'
+      // System instructions go in 'instructions' field, not as a message
+      body = {
+        model,
+        instructions: system,
+        input: [
+          { role: 'user', content: userMsg },
+        ],
+        max_output_tokens: maxTokens,
+      };
+      console.log('[LLM] Using Responses API for reasoning model:', model);
     } else {
-      llmUrl = `${endpoint.replace(/\/+$/, '')}/chat/completions`;
-    }
-
-    const headers = {
-      'Content-Type': 'application/json',
-    };
-
-    // Determine auth: API key or Azure AD token
-    if (LLM_AUTH_MODE === 'api-key') {
+      // Standard Chat Completions API
       if (endpoint.includes('openai.azure.com')) {
-        headers['api-key'] = apiKey;
+        const base = endpoint.replace(/\/openai\/v1\/?$/, '').replace(/\/+$/, '');
+        llmUrl = `${base}/openai/deployments/${model}/chat/completions?api-version=2025-01-01-preview`;
       } else {
-        headers['Authorization'] = `Bearer ${apiKey}`;
+        llmUrl = `${endpoint.replace(/\/+$/, '')}/chat/completions`;
       }
-    } else {
-      // Azure AD auth
-      const adToken = await getAzureAdToken();
-      if (!adToken) {
-        return res.status(503).json({ error: 'LLM not available — no API key and Azure AD auth failed. Set LLM_API_KEY in server/.env' });
-      }
-      headers['Authorization'] = `Bearer ${adToken}`;
+      body = {
+        model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userMsg },
+        ],
+        max_tokens: maxTokens,
+        temperature: 0.2,
+      };
     }
-
-    const body = {
-      model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: userMsg },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.2,
-    };
 
     console.log('[LLM] Calling:', llmUrl);
     console.log('[LLM] Auth mode:', LLM_AUTH_MODE);
@@ -174,7 +181,16 @@ app.post('/api/agent', async (req, res) => {
         console.error('LLM error:', JSON.stringify(data.error));
         return res.status(400).json({ error: JSON.stringify(data.error) });
       }
-      const content = data.choices?.[0]?.message?.content || '';
+
+      // Extract content based on API type
+      let content;
+      if (useResponsesApi) {
+        // Responses API: output[].content[].text
+        content = data.output?.find(o => o.type === 'message')?.content?.find(c => c.type === 'output_text')?.text || '';
+      } else {
+        // Chat Completions API: choices[].message.content
+        content = data.choices?.[0]?.message?.content || '';
+      }
       console.log('[LLM] Success, content length:', content.length);
       res.json({ content, usage: data.usage });
     } finally {
