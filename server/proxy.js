@@ -1440,7 +1440,7 @@ for t in traces_list:
     db.execute('INSERT INTO traces VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         (trace_id, f'agent_{model_id[:8]}', model_id,
          t.get('question', ''), t.get('category', 'general'),
-         total_ms, 0, '', '', 'fail' if total_ms > 10000 else 'pass',
+         total_ms, t.get('retries', 0), t.get('daxGenerated', ''), t.get('tablesUsed', ''), 'fail' if total_ms > 10000 else 'pass',
          0, bd_parse, bd_schema, bd_nldax, bd_exec, bd_synth,
          'live', data.get('sessionId', '')))
 
@@ -1460,9 +1460,9 @@ db.row_factory = sqlite3.Row
 traces_out = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
 db.close()
 
-# Detect domain for result
+# Detect domain for result — explicit domain param takes priority
 detected_domain = data.get('domain', '')
-if not detected_domain:
+if not detected_domain or detected_domain.lower() in ('auto', ''):
     il = instructions.lower()
     if 'procurement' in il or 'vendor' in il or 'inventory' in il or 'supply' in il:
         detected_domain = 'SUPPLY_CHAIN'
@@ -1485,6 +1485,7 @@ print(json.dumps(result))
     sessionId, dbPath, workspaceId, agentId,
     agentName: agentName || 'LOS_Bad_Agent',
     agentInstructions: agentInstructions || '',
+    domain: req.body.domain || '',
     tables: tables || [],
     traces: traces || [],
   });
