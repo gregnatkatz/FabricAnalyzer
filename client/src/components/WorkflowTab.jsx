@@ -94,11 +94,13 @@ export default function WorkflowTab({ session, updateSession }) {
 
     try {
       // Run entire pipeline as a single call — much faster than per-agent
+      // Pass per-agent model assignments so the pipeline routes each agent to its model
       const result = await runAnalysis(session.dbPath, {
         sessionId: session.sessionId,
         agentId: 'all',
         domain: session.domain,
         sampleMode: session.sampleMode,
+        agentModels: agentModels,
       });
 
       clearInterval(animInterval);

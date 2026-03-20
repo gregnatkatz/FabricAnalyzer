@@ -785,7 +785,7 @@ db.close()
 
 // Run analysis pipeline
 app.post('/api/analyze', (req, res) => {
-  const { dbPath, sessionId, agentId, domain, sampleMode, modelOverride } = req.body;
+  const { dbPath, sessionId, agentId, domain, sampleMode, modelOverride, agentModels } = req.body;
   if (!dbPath) return res.status(400).json({ error: 'dbPath required' });
 
   const pipelineScript = join(__dirname, '..', 'agents', 'pipeline.py');
@@ -802,6 +802,11 @@ app.post('/api/analyze', (req, res) => {
     '--proxy-url', `http://localhost:${PORT}`,
   ];
   if (sampleMode) args.push('--sample-mode');
+  // Pass per-agent model map so pipeline routes each agent to its assigned model
+  if (agentModels && typeof agentModels === 'object') {
+    args.push('--agent-models', JSON.stringify(agentModels));
+    console.log('[analyze] Per-agent models:', JSON.stringify(agentModels));
+  }
 
   const py = spawn(PYTHON_PATH, args, {
     cwd: join(__dirname, '..'),

@@ -41,14 +41,17 @@ def query_chromadb(chromadb_path, collection_name, query_text, n_results=5):
         return []
 
 
-def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200):
-    """Call LLM via Express proxy."""
+def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override=None):
+    """Call LLM via Express proxy with optional per-agent model override."""
     if not REQUESTS_AVAILABLE:
         return None
     try:
+        payload = {'system': system_prompt, 'userMsg': user_msg, 'maxTokens': max_tokens}
+        if model_override:
+            payload['modelOverride'] = model_override
         resp = requests.post(
             f'{proxy_url}/api/agent',
-            json={'system': system_prompt, 'userMsg': user_msg, 'maxTokens': max_tokens},
+            json=payload,
             timeout=180,
         )
         if resp.status_code == 200:
@@ -168,8 +171,9 @@ def load_db_context(db_path):
     }
 
 
-def run_agent_with_llm(agent_id, prompt_key, template_vars, proxy_url, chromadb_path, session_id):
-    """Run an LLM-backed agent: query ChromaDB, format prompt, call LLM, parse JSON."""
+def run_agent_with_llm(agent_id, prompt_key, template_vars, proxy_url, chromadb_path, session_id, model_override=None):
+    """Run an LLM-backed agent: query ChromaDB, format prompt, call LLM, parse JSON.
+    model_override: if set, routes this agent's LLM call to a specific model (e.g. gpt-5.4-pro)."""
     # Query ChromaDB for grounding
     query = AGENT_CHROMA_QUERIES.get(agent_id, '')
     grounding = query_chromadb(chromadb_path, 'microsoft_docs', query, n_results=5)
@@ -186,9 +190,11 @@ def run_agent_with_llm(agent_id, prompt_key, template_vars, proxy_url, chromadb_
     except KeyError as e:
         system_prompt = prompt_template  # Use as-is if missing keys
 
-    # Call LLM
+    # Call LLM with per-agent model override
     user_msg = f'Analyze and respond with valid JSON only. Agent: {agent_id}'
-    raw = call_llm(proxy_url, system_prompt, user_msg, max_tokens=2000)
+    model_label = f' (model: {model_override})' if model_override else ''
+    print(f'[pipeline] LLM call for {agent_id}{model_label}', file=sys.stderr)
+    raw = call_llm(proxy_url, system_prompt, user_msg, max_tokens=2000, model_override=model_override)
     parsed = parse_llm_json(raw)
 
     return parsed.get('findings', []), parsed
@@ -196,11 +202,15 @@ def run_agent_with_llm(agent_id, prompt_key, template_vars, proxy_url, chromadb_
 
 def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto',
                  proxy_url='http://localhost:3001', chromadb_path='./chroma_db',
-                 sample_mode=False):
-    """Run the full 9-agent pipeline."""
+                 sample_mode=False, agent_models=None):
+    """Run the full 9-agent pipeline.
+    agent_models: dict mapping agent_id -> model_id for per-agent model routing.
+    Example: {'domain_intelligence': 'gpt-5.4-pro', 'schema': 'DeepSeek-V3.2-Speciale'}
+    """
     all_findings = []
     results = {}
     ctx = load_db_context(db_path)
+    agent_models = agent_models or {}
 
     # Agent 1: Domain Intelligence
     if agent_filter in ('all', 'domain_intelligence'):
@@ -222,6 +232,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
             llm_findings, llm_data = run_agent_with_llm(
                 'domain_intelligence', 'domain_intelligence', template_vars,
                 proxy_url, chromadb_path, session_id,
+                model_override=agent_models.get('domain_intelligence'),
             )
             # Update probe questions with LLM-generated ones if available
             if llm_data.get('probe_questions'):
@@ -262,6 +273,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
             }
             llm_findings, _ = run_agent_with_llm(
                 'schema', 'schema', template_vars, proxy_url, chromadb_path, session_id,
+                model_override=agent_models.get('schema'),
             )
 
         merged = merge_findings(det_findings, llm_findings)
@@ -293,6 +305,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
             }
             llm_findings, _ = run_agent_with_llm(
                 'dax', 'dax', template_vars, proxy_url, chromadb_path, session_id,
+                model_override=agent_models.get('dax'),
             )
 
         merged = merge_findings(det_findings, llm_findings)
@@ -324,6 +337,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
             }
             llm_findings, _ = run_agent_with_llm(
                 'execution', 'execution', template_vars, proxy_url, chromadb_path, session_id,
+                model_override=agent_models.get('execution'),
             )
 
         merged = merge_findings(det_findings, llm_findings)
@@ -342,6 +356,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
             }
             llm_findings, synthesis_data = run_agent_with_llm(
                 'synthesis', 'synthesis', template_vars, proxy_url, chromadb_path, session_id,
+                model_override=agent_models.get('synthesis'),
             )
             results['synthesis'] = synthesis_data
             all_findings.extend(llm_findings)
@@ -384,6 +399,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
             }
             llm_findings, remediation_data = run_agent_with_llm(
                 'remediation', 'remediation', template_vars, proxy_url, chromadb_path, session_id,
+                model_override=agent_models.get('remediation'),
             )
             results['remediation'] = remediation_data
         else:
@@ -432,6 +448,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
             }
             llm_findings, validation_data = run_agent_with_llm(
                 'validation', 'validation', template_vars, proxy_url, chromadb_path, session_id,
+                model_override=agent_models.get('validation'),
             )
             results['validation'] = validation_data
             all_findings.extend(llm_findings)
@@ -480,8 +497,16 @@ def main():
     parser.add_argument('--chromadb-path', default='./chroma_db', help='ChromaDB path')
     parser.add_argument('--proxy-url', default='http://localhost:3001', help='Express proxy URL')
     parser.add_argument('--sample-mode', action='store_true', help='Sample mode flag')
+    parser.add_argument('--agent-models', default='{}', help='JSON map of agent_id -> model_id for per-agent model routing')
 
     args = parser.parse_args()
+
+    # Parse agent models JSON
+    try:
+        agent_models = json.loads(args.agent_models)
+    except json.JSONDecodeError:
+        agent_models = {}
+        print(f'[pipeline] Warning: invalid --agent-models JSON, using defaults', file=sys.stderr)
 
     result = run_pipeline(
         db_path=args.db,
@@ -491,6 +516,7 @@ def main():
         proxy_url=args.proxy_url,
         chromadb_path=args.chromadb_path,
         sample_mode=args.sample_mode,
+        agent_models=agent_models,
     )
 
     print(json.dumps(result))
