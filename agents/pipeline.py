@@ -58,21 +58,30 @@ def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override
     if model_override and model_override in REASONING_MODELS:
         effective_max_tokens = max(max_tokens, 3000)  # Moderate increase for reasoning
 
-    models_to_try = [model_override] if model_override else [None]
-    # Add fallback for reasoning models that may hit server errors
+    # Build retry sequence: for reasoning models, retry the model itself (proxy does
+    # escalating timeouts 60s/90s/120s per attempt), then fall back to DeepSeek.
+    # Pipeline-level retries give the proxy multiple chances with its own retry loop.
+    REASONING_RETRIES = 3  # Number of times to try the reasoning model before fallback
+    models_to_try = []
     if model_override and model_override in REASONING_MODELS:
-        models_to_try.append(DEFAULT_FALLBACK_MODEL)
+        models_to_try = [model_override] * REASONING_RETRIES + [DEFAULT_FALLBACK_MODEL]
+    elif model_override:
+        models_to_try = [model_override]
+    else:
+        models_to_try = [None]
 
     for attempt, model in enumerate(models_to_try):
+        is_reasoning = model and model in REASONING_MODELS
         try:
-            tokens = effective_max_tokens if (model and model in REASONING_MODELS) else max_tokens
+            tokens = effective_max_tokens if is_reasoning else max_tokens
             payload = {'system': system_prompt, 'userMsg': user_msg, 'maxTokens': tokens}
             if model:
                 payload['modelOverride'] = model
-            label = f' (model: {model}, attempt {attempt+1})' if model else ''
+            label = f' (model: {model}, attempt {attempt+1}/{len(models_to_try)})' if model else ''
             print(f'[pipeline] LLM call{label}', file=sys.stderr)
-            # Shorter timeout for reasoning models since we have DeepSeek fallback
-            req_timeout = 50 if (model and model in REASONING_MODELS) else 180
+            # Reasoning models: proxy already retries with escalating timeouts (60/90/120s)
+            # so use a generous pipeline-level timeout to let the proxy finish its retries
+            req_timeout = 135 if is_reasoning else 190
             resp = requests.post(
                 f'{proxy_url}/api/agent',
                 json=payload,
@@ -84,19 +93,31 @@ def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override
                 if content and len(content) > 10:
                     return content
                 elif attempt < len(models_to_try) - 1:
-                    print(f'[pipeline] Empty response from {model}, falling back to {models_to_try[attempt+1]}', file=sys.stderr)
+                    next_model = models_to_try[attempt+1]
+                    if next_model == model:
+                        print(f'[pipeline] Empty response from {model}, retrying ({attempt+2}/{len(models_to_try)})...', file=sys.stderr)
+                    else:
+                        print(f'[pipeline] Empty response from {model}, falling back to {next_model}', file=sys.stderr)
                     continue
                 return content  # Return even if empty on last attempt
             else:
                 print(f'LLM error: {resp.status_code} {resp.text}', file=sys.stderr)
                 if attempt < len(models_to_try) - 1:
-                    print(f'[pipeline] Retrying with fallback model {models_to_try[attempt+1]}', file=sys.stderr)
+                    next_model = models_to_try[attempt+1]
+                    if next_model == model:
+                        print(f'[pipeline] Retrying {model} ({attempt+2}/{len(models_to_try)})...', file=sys.stderr)
+                    else:
+                        print(f'[pipeline] Falling back to {next_model}', file=sys.stderr)
                     continue
                 return None
         except Exception as e:
             print(f'LLM call failed: {e}', file=sys.stderr)
             if attempt < len(models_to_try) - 1:
-                print(f'[pipeline] Retrying with fallback model {models_to_try[attempt+1]}', file=sys.stderr)
+                next_model = models_to_try[attempt+1]
+                if next_model == model:
+                    print(f'[pipeline] Retrying {model} ({attempt+2}/{len(models_to_try)})...', file=sys.stderr)
+                else:
+                    print(f'[pipeline] Falling back to {next_model}', file=sys.stderr)
                 continue
             return None
     return None

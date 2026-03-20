@@ -172,10 +172,32 @@ app.post('/api/agent', async (req, res) => {
     writeFileSync(tmpBodyFile, JSON.stringify(body));
 
     try {
-      const curlTimeout = useResponsesApi ? 45 : 180;  // Reasoning models: 45s timeout, pipeline has DeepSeek fallback
-      const curlCmd = `curl -s -m ${curlTimeout} -X POST "${llmUrl}" -H "Content-Type: application/json" ${authHeader} -d @${tmpBodyFile}`;
-      const result = execSync(curlCmd, { encoding: 'utf8', timeout: curlTimeout * 1000 + 5000 });
-      console.log('[LLM] Got response, length:', result.length);
+      // Retry logic: reasoning models get multiple attempts with escalating timeouts
+      const timeouts = useResponsesApi ? [60, 90, 120] : [180];
+      let lastError = null;
+      let result = null;
+
+      for (let attempt = 0; attempt < timeouts.length; attempt++) {
+        const curlTimeout = timeouts[attempt];
+        console.log(`[LLM] Attempt ${attempt + 1}/${timeouts.length} with ${curlTimeout}s timeout for ${model}`);
+        const curlCmd = `curl -s -m ${curlTimeout} -X POST "${llmUrl}" -H "Content-Type: application/json" ${authHeader} -d @${tmpBodyFile}`;
+        try {
+          result = execSync(curlCmd, { encoding: 'utf8', timeout: curlTimeout * 1000 + 5000 });
+          console.log('[LLM] Got response, length:', result.length);
+          break;  // Success — exit retry loop
+        } catch (curlErr) {
+          lastError = curlErr;
+          console.warn(`[LLM] Attempt ${attempt + 1} failed for ${model} (timeout ${curlTimeout}s): ${curlErr.message?.substring(0, 100)}`);
+          if (attempt < timeouts.length - 1) {
+            console.log(`[LLM] Retrying ${model} with longer timeout (${timeouts[attempt + 1]}s)...`);
+          }
+        }
+      }
+
+      if (!result) {
+        console.error(`[LLM] All ${timeouts.length} attempts failed for ${model}`);
+        throw lastError || new Error(`All retry attempts failed for ${model}`);
+      }
 
       const data = JSON.parse(result);
       if (data.error) {
