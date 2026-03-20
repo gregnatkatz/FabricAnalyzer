@@ -24,7 +24,7 @@ const PYTHON_PATH = process.env.PYTHON_PATH || 'python3';
 // Per-model endpoint configuration — supports routing different models to different Azure AI endpoints
 // If a model has its own endpoint env var, use that; otherwise fall back to default LLM_ENDPOINT
 const MODEL_ENDPOINTS = {
-  'gpt-5.4-pro-2': {
+  'gpt-5.4-pro': {
     endpoint: process.env.LLM_ENDPOINT_GPT || process.env.LLM_ENDPOINT,
     apiKey: process.env.LLM_API_KEY_GPT || process.env.LLM_API_KEY,
   },
@@ -39,6 +39,10 @@ const MODEL_ENDPOINTS = {
   'Phi-4-reasoning': {
     endpoint: process.env.LLM_ENDPOINT_PHI || process.env.LLM_ENDPOINT,
     apiKey: process.env.LLM_API_KEY_PHI || process.env.LLM_API_KEY,
+  },
+  'DeepSeek-V3.2': {
+    endpoint: process.env.LLM_ENDPOINT_DEEPSEEK || process.env.LLM_ENDPOINT,
+    apiKey: process.env.LLM_API_KEY_DEEPSEEK || process.env.LLM_API_KEY,
   },
 };
 
@@ -100,10 +104,10 @@ app.get('/api/health', (req, res) => {
 app.get('/api/models', (req, res) => {
   res.json({
     models: [
-      { id: 'gpt-5.4-pro-2', name: 'GPT-5.4 Pro', provider: 'Azure OpenAI', authMethods: ['api-key', 'entra-id'] },
-      { id: 'grok-4-1-fast-reasoning', name: 'Grok 4.1 Fast Reasoning', provider: 'Azure AI (xAI)', authMethods: ['entra-id'] },
+      { id: 'grok-4-1-fast-reasoning', name: 'Grok 4.1 Fast Reasoning', provider: 'Azure AI (xAI)', authMethods: ['api-key'] },
       { id: 'DeepSeek-V3.2-Speciale', name: 'DeepSeek V3.2 Speciale', provider: 'Azure AI (DeepSeek)', authMethods: ['api-key'] },
-      { id: 'Phi-4-reasoning', name: 'Phi-4 Reasoning', provider: 'Azure AI (Microsoft)', authMethods: ['api-key'] },
+      { id: 'DeepSeek-V3.2', name: 'DeepSeek V3.2', provider: 'Azure AI (DeepSeek)', authMethods: ['api-key'] },
+      { id: 'gpt-5.4-pro', name: 'GPT-5.4 Pro (Reasoning)', provider: 'Azure OpenAI', authMethods: ['api-key'], note: 'Uses responses API, not chat completions' },
     ],
     defaultModel: process.env.LLM_MODEL,
     authMode: LLM_AUTH_MODE,
@@ -120,9 +124,15 @@ app.post('/api/agent', async (req, res) => {
     const apiKey = modelConfig.apiKey;
 
     // Build Azure OpenAI compatible request
-    const llmUrl = endpoint.includes('openai.azure.com')
-      ? `${endpoint.replace(/\/+$/, '')}/chat/completions?api-version=2024-12-01-preview`
-      : `${endpoint.replace(/\/+$/, '')}/chat/completions`;
+    let llmUrl;
+    if (endpoint.includes('openai.azure.com')) {
+      // Azure OpenAI: use deployments/{model} URL format
+      // Strip any trailing path like /openai/v1 to get the base
+      const base = endpoint.replace(/\/openai\/v1\/?$/, '').replace(/\/+$/, '');
+      llmUrl = `${base}/openai/deployments/${model}/chat/completions?api-version=2025-01-01-preview`;
+    } else {
+      llmUrl = `${endpoint.replace(/\/+$/, '')}/chat/completions`;
+    }
 
     const headers = {
       'Content-Type': 'application/json',
@@ -154,11 +164,16 @@ app.post('/api/agent', async (req, res) => {
       temperature: 0.2,
     };
 
+    // Azure AI reasoning models can take 60-120s; use AbortController for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 min timeout
     const response = await fetch(llmUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const text = await response.text();

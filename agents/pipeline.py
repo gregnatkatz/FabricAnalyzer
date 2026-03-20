@@ -49,7 +49,7 @@ def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200):
         resp = requests.post(
             f'{proxy_url}/api/agent',
             json={'system': system_prompt, 'userMsg': user_msg, 'maxTokens': max_tokens},
-            timeout=60,
+            timeout=180,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -210,7 +210,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
         results['domain_intelligence'] = di_result
 
         # LLM enhancement for hypotheses
-        if proxy_url and agent_filter == 'all':
+        if proxy_url:
             template_vars = {
                 'table_names': ', '.join(ctx['table_names']),
                 'measure_names': ', '.join(ctx['measure_names']),

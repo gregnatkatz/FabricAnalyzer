@@ -72,44 +72,62 @@ export default function WorkflowTab({ session, updateSession }) {
     AGENT_ORDER.forEach(a => { statuses[a] = 'pending'; });
     setAgentStatuses({ ...statuses });
 
-    try {
-      // Simulate pipeline progression
-      for (const agentId of AGENT_ORDER) {
+    // Animate agents as running sequentially for visual feedback
+    let animIdx = 0;
+    const animInterval = setInterval(() => {
+      if (animIdx < AGENT_ORDER.length) {
+        const agentId = AGENT_ORDER[animIdx];
         setAgentStatuses(prev => ({ ...prev, [agentId]: 'running' }));
         updateSession({
           pipelineLog: [...(session.pipelineLog || []), { agent: agentId, status: 'running', ts: Date.now() }],
         });
-
-        // Call the analysis endpoint for this agent
-        try {
-          const result = await runAnalysis(session.dbPath, {
-            sessionId: session.sessionId,
-            agentId,
-            domain: session.domain,
-            sampleMode: session.sampleMode,
-            modelOverride: agentModels[agentId] || undefined,
-          });
-
-          setAgentStatuses(prev => ({ ...prev, [agentId]: 'complete' }));
+        if (animIdx > 0) {
+          const prevAgent = AGENT_ORDER[animIdx - 1];
+          setAgentStatuses(prev => ({ ...prev, [prevAgent]: 'complete' }));
           updateSession({
-            pipelineLog: [...(session.pipelineLog || []), { agent: agentId, status: 'complete', ts: Date.now() }],
-            findings: [...(session.findings || []), ...(result.findings || [])],
-            agentResults: [...(session.agentResults || []), { agentId, ...result }],
-            ...(result.simulationResults ? { simulationResults: result.simulationResults } : {}),
-            ...(result.monteCarloResults ? { monteCarloResults: result.monteCarloResults } : {}),
-            ...(result.domain ? { domain: result.domain } : {}),
-            ...(result.traces ? { traces: result.traces } : {}),
-          });
-        } catch (err) {
-          setAgentStatuses(prev => ({ ...prev, [agentId]: 'error' }));
-          updateSession({
-            pipelineLog: [...(session.pipelineLog || []), { agent: agentId, status: 'error', error: err.message, ts: Date.now() }],
+            pipelineLog: [...(session.pipelineLog || []), { agent: prevAgent, status: 'complete', ts: Date.now() }],
           });
         }
+        animIdx++;
       }
+    }, 3000);
 
-      updateSession({ analysisComplete: true });
+    try {
+      // Run entire pipeline as a single call — much faster than per-agent
+      const result = await runAnalysis(session.dbPath, {
+        sessionId: session.sessionId,
+        agentId: 'all',
+        domain: session.domain,
+        sampleMode: session.sampleMode,
+      });
+
+      clearInterval(animInterval);
+
+      // Mark all agents as complete
+      const completeStatuses = {};
+      AGENT_ORDER.forEach(a => { completeStatuses[a] = 'complete'; });
+      setAgentStatuses(completeStatuses);
+
+      const completeLogs = AGENT_ORDER.map(a => ({ agent: a, status: 'complete', ts: Date.now() }));
+      updateSession({
+        pipelineLog: completeLogs,
+        findings: result.findings || [],
+        agentResults: [{ agentId: 'all', ...result }],
+        ...(result.monte_carlo ? { monteCarloResults: result.monte_carlo } : {}),
+        ...(result.synthesis ? { synthesisResults: result.synthesis } : {}),
+        ...(result.remediation ? { remediationResults: result.remediation } : {}),
+        ...(result.validation ? { validationResults: result.validation } : {}),
+        ...(result.domain ? { domain: result.domain } : {}),
+        analysisComplete: true,
+      });
     } catch (err) {
+      clearInterval(animInterval);
+      // Mark remaining as error
+      setAgentStatuses(prev => {
+        const updated = { ...prev };
+        AGENT_ORDER.forEach(a => { if (updated[a] !== 'complete') updated[a] = 'error'; });
+        return updated;
+      });
       setError(`Analysis failed: ${err.message}`);
     } finally {
       setRunning(false);
