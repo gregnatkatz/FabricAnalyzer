@@ -69,6 +69,13 @@ export async function collectData(workspaceId, modelId, accessToken) {
   });
 }
 
+export async function collectDataDirect(payload) {
+  return request('/fabric/collect-direct', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function resetSession(scope, sessionId) {
   return request('/reset', {
     method: 'POST',

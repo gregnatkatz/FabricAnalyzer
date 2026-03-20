@@ -33,6 +33,7 @@ const fabricScopes = {
 };
 
 let msalInstance = null;
+let manualToken = null;
 
 /**
  * Set Client ID and Tenant ID at runtime from the UI.
@@ -65,7 +66,23 @@ export async function loginPopup() {
   return response;
 }
 
+/**
+ * Set a manually-provided access token (bypasses MSAL popup flow).
+ * Useful when OAuth popup is blocked or for testing.
+ */
+export function setManualToken(token) {
+  manualToken = token;
+}
+
+export function getManualToken() {
+  return manualToken;
+}
+
 export async function getAccessToken() {
+  // If a manual token was provided, use it directly
+  if (manualToken) {
+    return manualToken;
+  }
   const instance = getMsalInstance();
   const accounts = instance.getAllAccounts();
   if (accounts.length === 0) {

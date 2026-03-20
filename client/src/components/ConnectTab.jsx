@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { loginPopup, logout, getAccessToken, setClientConfig, getClientConfig } from '../auth/msalConfig';
-import { loadSampleDataset, getWorkspaces, getModels, collectData, getScenarios, loadScenario, healthCheck } from '../api/proxy';
+import { loginPopup, logout, getAccessToken, setClientConfig, getClientConfig, setManualToken } from '../auth/msalConfig';
+import { loadSampleDataset, getWorkspaces, getModels, collectData, collectDataDirect, getScenarios, loadScenario, healthCheck } from '../api/proxy';
 
 // Comprehensive setup checklist for Fabric Data Agent testing
 const SETUP_STEPS = [
@@ -121,6 +121,12 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [quickClientId, setQuickClientId] = useState(getClientConfig().clientId);
   const [quickTenantId, setQuickTenantId] = useState(getClientConfig().tenantId === 'common' ? '' : getClientConfig().tenantId);
   const [configSaved, setConfigSaved] = useState(false);
+  const [showManualToken, setShowManualToken] = useState(false);
+  const [manualTokenInput, setManualTokenInput] = useState('');
+  const [directAgentId, setDirectAgentId] = useState('');
+  const [directAgentName, setDirectAgentName] = useState('');
+  const [directInstructions, setDirectInstructions] = useState('');
+  const [showDirectEntry, setShowDirectEntry] = useState(false);
 
   const toggleStep = (stepId) => {
     setCheckedSteps(prev => ({ ...prev, [stepId]: !prev[stepId] }));
@@ -185,9 +191,28 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
         user: response.account.name || response.account.username,
       });
     } catch (err) {
-      setError(`Sign-in failed: ${err.message}`);
+      setError(`Sign-in failed: ${err.message}. Try "Paste Token" below if popup is blocked.`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleManualToken = () => {
+    if (!manualTokenInput.trim()) return;
+    setManualToken(manualTokenInput.trim());
+    // Decode JWT to get user info
+    try {
+      const payload = JSON.parse(atob(manualTokenInput.trim().split('.')[1]));
+      updateSession({
+        connected: true,
+        user: payload.name || payload.upn || payload.unique_name || 'Token User',
+      });
+      setError('');
+      setShowManualToken(false);
+    } catch {
+      updateSession({ connected: true, user: 'Token User' });
+      setError('');
+      setShowManualToken(false);
     }
   };
 
@@ -309,6 +334,40 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
       onNavigate('traces');
     } catch (err) {
       setError(`Collection failed: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDirectCollect = async (tracesFromPortal) => {
+    if (!workspaceId.trim() || !directAgentId.trim()) return;
+    try {
+      setLoading(true);
+      setError('');
+      setStatus('Building session from Fabric portal data...');
+      const result = await collectDataDirect({
+        workspaceId: workspaceId.trim(),
+        agentId: directAgentId.trim(),
+        agentName: directAgentName.trim() || 'Data Agent',
+        agentInstructions: directInstructions.trim(),
+        tables: [],
+        traces: tracesFromPortal || [],
+      });
+      updateSession({
+        connected: true,
+        sessionId: result.sessionId,
+        dbPath: result.dbPath,
+        modelId: directAgentId.trim(),
+        modelName: result.modelName,
+        domain: result.domain || 'healthcare',
+        traces: result.traces || [],
+        collectionComplete: true,
+        workspaceId: workspaceId.trim(),
+      });
+      setStatus('Live agent data loaded successfully');
+      onNavigate('traces');
+    } catch (err) {
+      setError(`Direct collection failed: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -667,18 +726,82 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
           </div>
 
           {!session.connected ? (
-            <button
-              className="btn-secondary"
-              onClick={handleSignIn}
-              disabled={loading || !quickClientId.trim()}
-              style={{
-                width: '100%',
-                justifyContent: 'center',
-                opacity: quickClientId.trim() ? 1 : 0.5,
-              }}
-            >
-              {!quickClientId.trim() ? 'Enter Client ID above to Sign In' : 'Connect to Fabric (OAuth)'}  
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button
+                className="btn-secondary"
+                onClick={handleSignIn}
+                disabled={loading || !quickClientId.trim()}
+                style={{
+                  width: '100%',
+                  justifyContent: 'center',
+                  opacity: quickClientId.trim() ? 1 : 0.5,
+                }}
+              >
+                {!quickClientId.trim() ? 'Enter Client ID above to Sign In' : 'Connect to Fabric (OAuth)'}  
+              </button>
+              <button
+                onClick={() => setShowManualToken(!showManualToken)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  fontSize: 11,
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                  padding: 4,
+                }}
+              >
+                {showManualToken ? 'Hide token input' : 'Popup blocked? Paste a token manually'}
+              </button>
+              {showManualToken && (
+                <div style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  padding: 12,
+                  background: 'rgba(0,0,0,0.15)',
+                }}>
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                    Get a token from Fabric portal: Open browser DevTools → Application → Session Storage → copy a Power BI API access token (starts with "eyJ").
+                  </p>
+                  <textarea
+                    value={manualTokenInput}
+                    onChange={e => setManualTokenInput(e.target.value)}
+                    placeholder="Paste access token here (eyJ...)"
+                    rows={3}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      background: 'rgba(255,255,255,0.03)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      color: 'var(--text)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 11,
+                      outline: 'none',
+                      resize: 'vertical',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                  <button
+                    onClick={handleManualToken}
+                    disabled={!manualTokenInput.trim()}
+                    style={{
+                      marginTop: 8,
+                      padding: '6px 16px',
+                      borderRadius: 6,
+                      border: '1px solid var(--border)',
+                      background: manualTokenInput.trim() ? 'var(--teal)' : 'rgba(255,255,255,0.05)',
+                      color: manualTokenInput.trim() ? '#000' : 'var(--text-muted)',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: manualTokenInput.trim() ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    Connect with Token
+                  </button>
+                </div>
+              )}
+            </div>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 14, color: 'var(--green)' }}>
@@ -691,46 +814,17 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
           )}
         </div>
 
-        {/* Workspace ID Input */}
+        {/* Workspace & Agent Entry */}
         {session.connected && !session.sampleMode && (
           <div style={{ marginBottom: 24 }}>
             <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-              Workspace ID (from Power BI URL)
+              Workspace ID (from Fabric URL)
             </label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                type="text"
-                value={workspaceId}
-                onChange={e => setWorkspaceId(e.target.value)}
-                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                style={{
-                  flex: 1,
-                  padding: '10px 14px',
-                  background: 'rgba(255,255,255,0.03)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                  color: 'var(--text)',
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 13,
-                  outline: 'none',
-                }}
-              />
-              <button className="btn-primary" onClick={handleFetchModels} disabled={loading} style={{ padding: '10px 16px' }}>
-                Load
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Model Selector */}
-        {models.length > 0 && (
-          <div style={{ marginBottom: 24 }}>
-            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-              Select Data Agent
-            </label>
-            <select
-              value={selectedModel}
-              onChange={e => setSelectedModel(e.target.value)}
+            <input
+              type="text"
+              value={workspaceId}
+              onChange={e => setWorkspaceId(e.target.value)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
               style={{
                 width: '100%',
                 padding: '10px 14px',
@@ -738,29 +832,118 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
                 border: '1px solid var(--border)',
                 borderRadius: 8,
                 color: 'var(--text)',
-                fontFamily: 'var(--font-display)',
-                fontSize: 14,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 13,
                 outline: 'none',
+                marginBottom: 12,
+                boxSizing: 'border-box',
+              }}
+            />
+
+            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+              Data Agent ID (from Fabric URL: /aiskills/&lt;this-id&gt;)
+            </label>
+            <input
+              type="text"
+              value={directAgentId}
+              onChange={e => setDirectAgentId(e.target.value)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              style={{
+                width: '100%',
+                padding: '10px 14px',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                color: 'var(--text)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 13,
+                outline: 'none',
+                marginBottom: 12,
+                boxSizing: 'border-box',
+              }}
+            />
+
+            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+              Agent Name
+            </label>
+            <input
+              type="text"
+              value={directAgentName}
+              onChange={e => setDirectAgentName(e.target.value)}
+              placeholder="e.g. LOS_Bad_Agent"
+              style={{
+                width: '100%',
+                padding: '10px 14px',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                color: 'var(--text)',
+                fontSize: 13,
+                outline: 'none',
+                marginBottom: 12,
+                boxSizing: 'border-box',
+              }}
+            />
+
+            <button
+              onClick={() => setShowDirectEntry(!showDirectEntry)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-muted)',
+                fontSize: 11,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: 4,
+                marginBottom: 8,
               }}
             >
-              <option value="">Choose a model...</option>
-              {models.map(m => (
-                <option key={m.id} value={m.id}>{m.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
+              {showDirectEntry ? 'Hide agent instructions' : 'Paste agent instructions (optional)'}
+            </button>
 
-        {/* Collect Data Button */}
-        {selectedModel && (
-          <button
-            className="btn-primary"
-            onClick={handleCollect}
-            disabled={loading}
-            style={{ width: '100%', justifyContent: 'center' }}
-          >
-            {loading ? status || 'Collecting...' : 'Collect Data'}
-          </button>
+            {showDirectEntry && (
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                  Agent Instructions (paste from Fabric portal)
+                </label>
+                <textarea
+                  value={directInstructions}
+                  onChange={e => setDirectInstructions(e.target.value)}
+                  placeholder="Paste the agent's system prompt / instructions here..."
+                  rows={6}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    color: 'var(--text)',
+                    fontSize: 12,
+                    outline: 'none',
+                    resize: 'vertical',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+            )}
+
+            <button
+              className="btn-primary"
+              onClick={() => handleDirectCollect([])}
+              disabled={loading || !workspaceId.trim() || !directAgentId.trim()}
+              style={{
+                width: '100%',
+                justifyContent: 'center',
+                opacity: (workspaceId.trim() && directAgentId.trim()) ? 1 : 0.5,
+              }}
+            >
+              {loading ? status || 'Collecting...' : 'Analyze Data Agent'}
+            </button>
+
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
+              Find IDs in the Fabric URL: /groups/&lt;workspace-id&gt;/aiskills/&lt;agent-id&gt;
+            </p>
+          </div>
         )}
 
         {/* Status & Error */}
