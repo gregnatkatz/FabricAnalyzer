@@ -4,7 +4,7 @@ import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'fs';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -116,6 +116,7 @@ app.get('/api/models', (req, res) => {
 
 // LLM proxy — forwards to Azure OpenAI (or any OpenAI-compatible endpoint)
 app.post('/api/agent', async (req, res) => {
+  console.log('[LLM] /api/agent called, model:', req.body?.modelOverride || process.env.LLM_MODEL);
   try {
     const { system, userMsg, maxTokens = 1200, modelOverride } = req.body;
     const model = modelOverride || process.env.LLM_MODEL;
@@ -164,26 +165,35 @@ app.post('/api/agent', async (req, res) => {
       temperature: 0.2,
     };
 
-    // Azure AI reasoning models can take 60-120s; use AbortController for timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 min timeout
-    const response = await fetch(llmUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+    console.log('[LLM] Calling:', llmUrl);
+    console.log('[LLM] Auth mode:', LLM_AUTH_MODE);
 
-    if (!response.ok) {
-      const text = await response.text();
-      console.error('LLM error:', response.status, text);
-      return res.status(response.status).json({ error: text });
+    // Use curl via execSync — Node.js fetch/https hangs on Azure AI endpoints
+    const authHeader = endpoint.includes('openai.azure.com')
+      ? `-H "api-key: ${apiKey}"`
+      : `-H "Authorization: Bearer ${apiKey}"`;
+
+    const { writeFileSync, unlinkSync } = await import('fs');
+    const tmpBodyFile = join(__dirname, '..', 'tmp', `llm_body_${Date.now()}.json`);
+    mkdirSync(join(__dirname, '..', 'tmp'), { recursive: true });
+    writeFileSync(tmpBodyFile, JSON.stringify(body));
+
+    try {
+      const curlCmd = `curl -s -m 180 -X POST "${llmUrl}" -H "Content-Type: application/json" ${authHeader} -d @${tmpBodyFile}`;
+      const result = execSync(curlCmd, { encoding: 'utf8', timeout: 180000 });
+      console.log('[LLM] Got response, length:', result.length);
+
+      const data = JSON.parse(result);
+      if (data.error) {
+        console.error('LLM error:', JSON.stringify(data.error));
+        return res.status(400).json({ error: JSON.stringify(data.error) });
+      }
+      const content = data.choices?.[0]?.message?.content || '';
+      console.log('[LLM] Success, content length:', content.length);
+      res.json({ content, usage: data.usage });
+    } finally {
+      try { unlinkSync(tmpBodyFile); } catch (_) {}
     }
-
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || '';
-    res.json({ content, usage: data.usage });
   } catch (err) {
     console.error('LLM proxy error:', err);
     res.status(500).json({ error: err.message });
