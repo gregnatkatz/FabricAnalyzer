@@ -134,3 +134,51 @@ def run_expression_checks(db_path):
             unique.append(f)
 
     return unique
+
+
+def run_expression_checks_with_llm(db_path, proxy_url, chromadb_path, session_id,
+                                    domain, behavioral_evidence, agent_models,
+                                    run_agent_with_llm_fn, merge_findings_fn,
+                                    write_findings_fn):
+    """Run DAX Expression agent: 8 deterministic rules + DeepSeek LLM analysis.
+
+    Calls run_expression_checks() first for the deterministic pass, then sends
+    the measure list + deterministic findings to DeepSeek for pattern detection
+    that regex can't catch (circular refs, BLANK propagation, hardcoded dates, etc.).
+
+    Arguments use injected helpers from pipeline.py to avoid circular imports.
+    """
+    import sqlite3
+    import json
+
+    # Step 1: deterministic pass (existing 8 rules, fast, no LLM)
+    det_findings = run_expression_checks(db_path)
+
+    # Step 2: LLM pass via DeepSeek (fast, not a reasoning model)
+    llm_findings = []
+    if proxy_url:
+        db = sqlite3.connect(db_path)
+        db.row_factory = sqlite3.Row
+        measures = [dict(r) for r in db.execute('SELECT name, expression FROM measures').fetchall()]
+        tables = [r['name'] for r in db.execute('SELECT name FROM tables').fetchall()]
+        db.close()
+
+        template_vars = {
+            'domain': domain,
+            'table_names': ', '.join(tables),
+            'measure_names': ', '.join(m['name'] for m in measures),
+            'deterministic_findings': json.dumps(det_findings),
+            'behavioral_evidence': behavioral_evidence,
+        }
+
+        model = agent_models.get('dax_expression', 'DeepSeek-V3.2-Speciale')
+        llm_findings, _ = run_agent_with_llm_fn(
+            'dax_expression', 'dax_expression', template_vars,
+            proxy_url, chromadb_path, session_id,
+            model_override=model,
+        )
+
+    # Merge: deterministic takes precedence, LLM fills the gaps
+    merged = merge_findings_fn(det_findings, llm_findings)
+    write_findings_fn(db_path, merged, agent_id_override='dax_expression')
+    return 'dax_expression', {'findings': merged}, merged

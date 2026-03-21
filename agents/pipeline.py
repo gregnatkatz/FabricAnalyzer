@@ -365,12 +365,18 @@ def _run_dax_agent(ctx, domain, behavioral_evidence, proxy_url, chromadb_path, s
     return 'dax', {'findings': merged}, merged
 
 
-def _run_dax_expression_agent(db_path):
-    """Run DAX Expression agent (deterministic only). Thread-safe."""
-    print('[pipeline] Running Agent 4b: DAX Expression (parallel)', file=sys.stderr)
-    expr_findings = dax_expression_checks.run_expression_checks(db_path)
-    write_findings_to_db(db_path, expr_findings, agent_id_override='dax_expression')
-    return 'dax_expression', {'findings': expr_findings}, expr_findings
+def _run_dax_expression_agent(ctx, domain, behavioral_evidence, proxy_url,
+                               chromadb_path, session_id, agent_models, db_path):
+    """Run DAX Expression agent: deterministic + DeepSeek LLM analysis. Thread-safe."""
+    print('[pipeline] Running Agent 5: DAX Expression (parallel, LLM enabled)', file=sys.stderr)
+    from agents.dax_expression_checks import run_expression_checks_with_llm
+    return run_expression_checks_with_llm(
+        db_path, proxy_url, chromadb_path, session_id,
+        domain, behavioral_evidence, agent_models,
+        run_agent_with_llm_fn=run_agent_with_llm,
+        merge_findings_fn=merge_findings,
+        write_findings_fn=write_findings_to_db,
+    )
 
 
 def _run_xmla_agent(db_path):
@@ -496,7 +502,10 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
                     proxy_url, chromadb_path, session_id, agent_models, db_path)
             if 'dax_expression' in parallel_agents:
                 agent_tasks['dax_expression'] = executor.submit(
-                    _run_dax_expression_agent, db_path)
+                    _run_dax_expression_agent,
+                    ctx, domain, behavioral_evidence,
+                    proxy_url, chromadb_path, session_id,
+                    agent_models, db_path)
             if 'xmla' in parallel_agents:
                 agent_tasks['xmla'] = executor.submit(
                     _run_xmla_agent, db_path)
@@ -508,7 +517,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
         # Collect results from all parallel agents
         for agent_id, future in agent_tasks.items():
             try:
-                name, result_data, findings = future.result(timeout=600)
+                name, result_data, findings = future.result(timeout=180)
                 all_findings.extend(findings)
                 results[name] = result_data
                 print(f'[pipeline] {name}: {len(findings)} findings (parallel complete)', file=sys.stderr)

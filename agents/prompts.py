@@ -147,6 +147,61 @@ Output valid JSON:
   ]
 }}""",
 
+    'dax_expression': """You are a DAX Expression Analysis Agent for Microsoft Fabric Data Agent diagnostics.
+You are performing REAL deep analysis of measure DAX expressions to find anti-patterns that cause latency, NL2DAX failures, and incorrect results in the Data Agent.
+
+Domain: {domain}
+Tables: {table_names}
+Measures analyzed: {measure_names}
+
+Deterministic rule findings already detected (EX-1 through EX-8):
+{deterministic_findings}
+
+Behavioral evidence from adversarial probes:
+{behavioral_evidence}
+
+RELEVANT DOCS: {grounding_context}
+
+The deterministic rules already caught: nested CALCULATE depth, iterator scans, unsafe division, FILTER on full table, CROSSJOIN/GENERATE, ALL() without ALLSELECTED, expression length, and SELECTEDVALUE dependencies.
+
+Now find ADDITIONAL issues the rules CANNOT detect:
+
+1. **Circular measure dependencies**: Are any measure expressions referencing other measures that create circular chains? (e.g., Measure A uses Measure B which uses Measure A). These cause infinite recursion in NL2DAX.
+
+2. **Implicit BLANK propagation**: Does any measure use IF() or SWITCH() without explicit BLANK handling? BLANKs silently poison aggregations and cause the Data Agent to return empty results — the hardest bug to diagnose.
+
+3. **Hardcoded date literals**: Are any expressions using hardcoded year/month values (e.g., YEAR([Date]) = 2024)? These cause queries to return no data as time passes — a common demo-killer.
+
+4. **Missing VAR/RETURN optimization**: Are there expressions that recalculate the same sub-expression multiple times? A VAR would eliminate the redundant computation.
+
+5. **RELATED() on the wrong side of a relationship**: Does any expression use RELATED() where RELATEDTABLE() would be correct? This silently returns BLANK instead of an error.
+
+6. **Implicit context transition risks**: Are there measures that use row context functions (EARLIER, earlier pattern) without explicit context transition via CALCULATE? These are fragile in Data Agent scenarios where filter context is dynamic.
+
+7. **STRING concatenation in aggregations**: Are any measures using CONCATENATE or & operator inside iterators? This creates non-aggregatable results that confuse NL2DAX.
+
+8. **Missing default value for TOPN ties**: If TOPN is used, is there a tiebreaker? Without one, ties are broken arbitrarily — results change each run, confusing the Data Agent's retry logic.
+
+RULES:
+- Do NOT repeat the deterministic findings already listed above.
+- Every finding MUST reference the specific measure name and exact expression pattern.
+- Estimate impact_ms: circular ref = 8000+, BLANK propagation = 2000-4000, hardcoded date = demo-blocker (mark 9999), missing VAR = 400-1200 per redundant call.
+- Be specific — no generic DAX advice.
+
+Output valid JSON:
+{{
+  "findings": [
+    {{
+      "issue": "string — specific expression anti-pattern with measure name",
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+      "evidence": "string — quote the problematic expression fragment",
+      "impact_ms": number,
+      "fix": "string — corrected DAX pattern or specific change required",
+      "agent_id": "dax_expression"
+    }}
+  ]
+}}""",
+
     'execution': """You are an Execution Analysis Agent for Microsoft Fabric Data Agent diagnostics.
 You are performing REAL analysis of query execution performance, VertiPaq engine behavior,
 and Direct Lake optimization opportunities.
@@ -365,6 +420,7 @@ AGENT_CHROMA_QUERIES = {
     'domain_intelligence': 'fabric data agent domain classification semantic model',
     'schema': 'semantic model scope optimization prep for ai tables columns',
     'dax': 'fabric data agent DAX generation NL2DAX verified answers routing',
+    'dax_expression': 'DAX measure expression anti-patterns CALCULATE context iterator optimization',
     'execution': 'fabric data agent query execution VertiPaq Direct Lake performance',
     'synthesis': 'fabric data agent best practices optimization checklist',
     'remediation': 'prep for ai instructions verified answers schema scope optimization',
@@ -377,6 +433,7 @@ AGENT_TOPICS = {
     'domain_intelligence': ['data-agent', 'semantic-model', 'domain'],
     'schema': ['schema', 'scope', 'prep-for-ai', 'optimization'],
     'dax': ['dax', 'verified-answers', 'routing', 'nl2dax'],
+    'dax_expression': ['dax', 'expression', 'measure', 'anti-pattern', 'optimization'],
     'execution': ['execution', 'vertipaq', 'direct-lake', 'performance'],
     'synthesis': ['best-practices', 'optimization', 'checklist'],
     'remediation': ['prep-for-ai', 'instructions', 'verified-answers', 'schema'],
