@@ -279,7 +279,7 @@ npm run dev
 1. Click **Sample Dataset** on the Connect tab
 2. View 10 traces on the Traces tab with CU Correlation metrics
 3. Select models per agent on the Workflow tab (GPT-5.4 Pro, DeepSeek V3.2 Speciale, etc.)
-4. Click **Run Analysis** to run the 9-agent pipeline
+4. Click **Run Analysis** to run the 11-agent pipeline
 5. Review findings on the Findings tab (ranked by latency impact)
 6. Toggle fixes on the Simulation tab to see instant Monte Carlo projections
 7. Select fixes and click **Run Validation** on the Validation tab
@@ -448,7 +448,7 @@ The tool includes a comprehensive catalog of **500 known latency issues** across
 
 ```
 Detection rate: 20/25 = 80%
-False positive rate: 4%
+False positive rate: 15% (4 out of 26 findings)
 Total deterministic findings: 26
 ```
 
