@@ -133,7 +133,8 @@ app.post('/api/agent', async (req, res) => {
       // IMPORTANT: max_output_tokens is shared between reasoning AND message content.
       // With too-low a value, the model spends all tokens on reasoning and returns 0 message content.
       // Use 16384 tokens to give the model room for both reasoning and a full response.
-      // Also set reasoning.effort = 'medium' to limit reasoning token consumption.
+      // Set reasoning.effort = 'medium' (minimum supported by gpt-5.4-pro; 'low' is not available).
+      // Complex pipeline prompts need generous timeouts (up to 240s) with medium reasoning.
       const reasoningMaxTokens = Math.max(maxTokens, 16384);
       body = {
         model,
@@ -169,87 +170,92 @@ app.post('/api/agent', async (req, res) => {
     console.log('[LLM] Calling:', llmUrl);
     console.log('[LLM] Auth mode:', LLM_AUTH_MODE);
 
-    // Use curl via execSync — Node.js fetch/https hangs on Azure AI endpoints
-    const authHeader = endpoint.includes('openai.azure.com')
-      ? `-H "api-key: ${apiKey}"`
-      : `-H "Authorization: Bearer ${apiKey}"`;
+    // Use Node.js native fetch for LLM calls — much better for long-running reasoning models
+    // that can take 2-4 minutes for complex prompts. curl with -m kills the connection at the
+    // timeout boundary, wasting all processing. fetch with AbortController is more reliable.
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(endpoint.includes('openai.azure.com')
+        ? { 'api-key': apiKey }
+        : { 'Authorization': `Bearer ${apiKey}` }),
+    };
 
-    const { writeFileSync, unlinkSync } = await import('fs');
-    const tmpBodyFile = join(__dirname, '..', 'tmp', `llm_body_${Date.now()}.json`);
-    mkdirSync(join(__dirname, '..', 'tmp'), { recursive: true });
-    writeFileSync(tmpBodyFile, JSON.stringify(body));
+    // Retry logic: reasoning models get multiple attempts with escalating timeouts
+    // GPT-5.4 Pro with medium reasoning effort needs 120-300s for complex pipeline prompts.
+    // Use generous timeouts — reasoning models do deep thinking on large inputs.
+    const timeouts = useResponsesApi ? [180, 240, 300] : [180];
+    let lastError = null;
+    let data = null;
 
-    try {
-      // Retry logic: reasoning models get multiple attempts with escalating timeouts
-      // With reasoning.effort='medium' and 16384 max_output_tokens, responses typically
-      // arrive in 60-120s. Escalate to 150s/180s for safety.
-      const timeouts = useResponsesApi ? [90, 120, 180] : [180];
-      let lastError = null;
-      let result = null;
-
-      for (let attempt = 0; attempt < timeouts.length; attempt++) {
-        const curlTimeout = timeouts[attempt];
-        console.log(`[LLM] Attempt ${attempt + 1}/${timeouts.length} with ${curlTimeout}s timeout for ${model}`);
-        const curlCmd = `curl -s -m ${curlTimeout} -X POST "${llmUrl}" -H "Content-Type: application/json" ${authHeader} -d @${tmpBodyFile}`;
-        try {
-          result = execSync(curlCmd, { encoding: 'utf8', timeout: curlTimeout * 1000 + 5000 });
-          console.log('[LLM] Got response, length:', result.length);
-          break;  // Success — exit retry loop
-        } catch (curlErr) {
-          lastError = curlErr;
-          console.warn(`[LLM] Attempt ${attempt + 1} failed for ${model} (timeout ${curlTimeout}s): ${curlErr.message?.substring(0, 100)}`);
-          if (attempt < timeouts.length - 1) {
-            console.log(`[LLM] Retrying ${model} with longer timeout (${timeouts[attempt + 1]}s)...`);
-          }
+    for (let attempt = 0; attempt < timeouts.length; attempt++) {
+      const timeoutSec = timeouts[attempt];
+      console.log(`[LLM] Attempt ${attempt + 1}/${timeouts.length} with ${timeoutSec}s timeout for ${model}`);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
+      try {
+        const fetchResp = await fetch(llmUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        const text = await fetchResp.text();
+        console.log('[LLM] Got response, length:', text.length);
+        data = JSON.parse(text);
+        break;  // Success — exit retry loop
+      } catch (fetchErr) {
+        clearTimeout(timer);
+        lastError = fetchErr;
+        const reason = fetchErr.name === 'AbortError' ? `timeout ${timeoutSec}s` : fetchErr.message?.substring(0, 100);
+        console.warn(`[LLM] Attempt ${attempt + 1} failed for ${model} (${reason})`);
+        if (attempt < timeouts.length - 1) {
+          console.log(`[LLM] Retrying ${model} with longer timeout (${timeouts[attempt + 1]}s)...`);
         }
       }
-
-      if (!result) {
-        console.error(`[LLM] All ${timeouts.length} attempts failed for ${model}`);
-        throw lastError || new Error(`All retry attempts failed for ${model}`);
-      }
-
-      const data = JSON.parse(result);
-      if (data.error) {
-        console.error('LLM error:', JSON.stringify(data.error));
-        return res.status(400).json({ error: JSON.stringify(data.error) });
-      }
-
-      // Extract content based on API type
-      let content;
-      if (useResponsesApi) {
-        // Responses API: output[].content[].text — try multiple extraction paths
-        console.log('[LLM] Responses API output types:', data.output?.map(o => o.type));
-        const msgOutput = data.output?.find(o => o.type === 'message');
-        if (msgOutput) {
-          console.log('[LLM] Message output content types:', msgOutput.content?.map(c => c.type));
-          content = msgOutput.content?.find(c => c.type === 'output_text')?.text || '';
-        }
-        // Fallback: try output_text at top level or text field
-        if (!content) {
-          for (const o of (data.output || [])) {
-            if (o.type === 'message' && o.content) {
-              for (const c of o.content) {
-                if (c.text) { content = c.text; break; }
-              }
-            }
-            if (content) break;
-          }
-        }
-        // Fallback: if status is 'completed' but no message output, check for text in any output
-        if (!content && data.output_text) {
-          content = data.output_text;
-        }
-        content = content || '';
-      } else {
-        // Chat Completions API: choices[].message.content
-        content = data.choices?.[0]?.message?.content || '';
-      }
-      console.log('[LLM] Success, content length:', content.length);
-      res.json({ content, usage: data.usage });
-    } finally {
-      try { unlinkSync(tmpBodyFile); } catch (_) {}
     }
+
+    if (!data) {
+      console.error(`[LLM] All ${timeouts.length} attempts failed for ${model}`);
+      throw lastError || new Error(`All retry attempts failed for ${model}`);
+    }
+    if (data.error) {
+      console.error('LLM error:', JSON.stringify(data.error));
+      return res.status(400).json({ error: JSON.stringify(data.error) });
+    }
+
+    // Extract content based on API type
+    let content;
+    if (useResponsesApi) {
+      // Responses API: output[].content[].text — try multiple extraction paths
+      console.log('[LLM] Responses API output types:', data.output?.map(o => o.type));
+      const msgOutput = data.output?.find(o => o.type === 'message');
+      if (msgOutput) {
+        console.log('[LLM] Message output content types:', msgOutput.content?.map(c => c.type));
+        content = msgOutput.content?.find(c => c.type === 'output_text')?.text || '';
+      }
+      // Fallback: try output_text at top level or text field
+      if (!content) {
+        for (const o of (data.output || [])) {
+          if (o.type === 'message' && o.content) {
+            for (const c of o.content) {
+              if (c.text) { content = c.text; break; }
+            }
+          }
+          if (content) break;
+        }
+      }
+      // Fallback: if status is 'completed' but no message output, check for text in any output
+      if (!content && data.output_text) {
+        content = data.output_text;
+      }
+      content = content || '';
+    } else {
+      // Chat Completions API: choices[].message.content
+      content = data.choices?.[0]?.message?.content || '';
+    }
+    console.log('[LLM] Success, content length:', content.length);
+    res.json({ content, usage: data.usage });
   } catch (err) {
     console.error('LLM proxy error:', err);
     res.status(500).json({ error: err.message });

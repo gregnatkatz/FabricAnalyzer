@@ -80,9 +80,9 @@ def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override
                 payload['modelOverride'] = model
             label = f' (model: {model}, attempt {attempt+1}/{len(models_to_try)})' if model else ''
             print(f'[pipeline] LLM call{label}', file=sys.stderr)
-            # Reasoning models: proxy retries with escalating timeouts (90/120/180s)
+            # Reasoning models: proxy retries with escalating timeouts (180/240/300s)
             # so use a generous pipeline-level timeout to let the proxy finish its retries
-            req_timeout = 200 if is_reasoning else 190
+            req_timeout = 320 if is_reasoning else 190
             resp = requests.post(
                 f'{proxy_url}/api/agent',
                 json=payload,
