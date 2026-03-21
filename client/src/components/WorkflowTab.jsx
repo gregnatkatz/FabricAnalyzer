@@ -57,6 +57,8 @@ export default function WorkflowTab({ session, updateSession }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
   const [agentModels, setAgentModels] = useState(() => ({ ...DEFAULT_AGENT_MODELS }));
+  const [elapsed, setElapsed] = useState(0);
+  const [completedCount, setCompletedCount] = useState(0);
 
   const handleModelChange = (agentId, modelId) => {
     setAgentModels(prev => ({ ...prev, [agentId]: modelId }));
@@ -72,6 +74,11 @@ export default function WorkflowTab({ session, updateSession }) {
     AGENT_ORDER.forEach(a => { statuses[a] = 'pending'; });
     setAgentStatuses({ ...statuses });
 
+    // Elapsed timer
+    setElapsed(0);
+    setCompletedCount(0);
+    const timerInterval = setInterval(() => setElapsed(prev => prev + 1), 1000);
+
     // Animate agents as running sequentially for visual feedback
     let animIdx = 0;
     const animInterval = setInterval(() => {
@@ -84,6 +91,7 @@ export default function WorkflowTab({ session, updateSession }) {
         if (animIdx > 0) {
           const prevAgent = AGENT_ORDER[animIdx - 1];
           setAgentStatuses(prev => ({ ...prev, [prevAgent]: 'complete' }));
+          setCompletedCount(animIdx);
           updateSession({
             pipelineLog: [...(session.pipelineLog || []), { agent: prevAgent, status: 'complete', ts: Date.now() }],
           });
@@ -104,8 +112,10 @@ export default function WorkflowTab({ session, updateSession }) {
       });
 
       clearInterval(animInterval);
+      clearInterval(timerInterval);
 
       // Mark all agents as complete
+      setCompletedCount(AGENT_ORDER.length);
       const completeStatuses = {};
       AGENT_ORDER.forEach(a => { completeStatuses[a] = 'complete'; });
       setAgentStatuses(completeStatuses);
@@ -124,6 +134,7 @@ export default function WorkflowTab({ session, updateSession }) {
       });
     } catch (err) {
       clearInterval(animInterval);
+      clearInterval(timerInterval);
       // Mark remaining as error
       setAgentStatuses(prev => {
         const updated = { ...prev };
@@ -142,13 +153,31 @@ export default function WorkflowTab({ session, updateSession }) {
       <div className="glass" style={{ padding: 32, marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
           <h3 style={{ fontSize: 16, fontWeight: 600 }}>{AGENT_ORDER.length}-Agent Analysis Pipeline</h3>
-          <button
-            className="btn-primary"
-            onClick={handleRunAnalysis}
-            disabled={running || !session.collectionComplete}
-          >
-            {running ? 'Running Analysis...' : 'Run Analysis'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            {running && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
+                <div style={{
+                  width: 120, height: 6, background: 'var(--bg-secondary)', borderRadius: 3, overflow: 'hidden',
+                }}>
+                  <div style={{
+                    width: `${Math.round((completedCount / AGENT_ORDER.length) * 100)}%`,
+                    height: '100%', background: 'var(--teal)', borderRadius: 3,
+                    transition: 'width 0.5s ease',
+                  }} />
+                </div>
+                <span style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                  {completedCount}/{AGENT_ORDER.length} agents &middot; {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
+                </span>
+              </div>
+            )}
+            <button
+              className="btn-primary"
+              onClick={handleRunAnalysis}
+              disabled={running || !session.collectionComplete}
+            >
+              {running ? 'Running Analysis...' : 'Run Analysis'}
+            </button>
+          </div>
         </div>
 
         {/* Agent pipeline visualization */}
