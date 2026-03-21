@@ -1313,12 +1313,237 @@ def build_scenario_20():
                      'Import', tables, measures, columns, rels, config, traces, cu, 3800.0)
 
 
+def build_scenario_21():
+    """Clinical Quality — Medication Safety: DAX nightmare + instruction chaos + 40s pre-scan.
+
+    This scenario is designed as the "DAX stress test" with:
+    - Massive instruction bloat with contradictory/conflicting routing rules (6200+ chars)
+    - Every DAX error pattern: deep nesting, CROSSJOIN on large tables, missing TOPN,
+      iterator abuse, division-by-zero risk, circular measure refs, NL2DAX contamination
+    - 40-second pre-scan overhead on every trace (bd_parse + bd_schema = ~40s)
+    - High retry counts (3-5 retries per query)
+    - Physician/patient data exposure
+    - Wrong table targeting + ambiguous time filters + empty results
+    - Measure confusion: exact duplicates, fuzzy duplicates, unknown measure refs
+    - Extreme scope bloat (35 tables) + zero verified answers
+    """
+    tables = [
+        # Core fact tables
+        ('FactMedicationOrders', 5000000, 0, None),
+        ('FactMedicationAdmin', 4500000, 0, None),
+        ('FactAdverseEvents', 200000, 0, 'Drug adverse events'),
+        ('FactLabResults', 8000000, 0, None),
+        ('FactAlerts', 1500000, 0, None),
+        ('FactPrescriptions', 3000000, 0, None),
+        ('FactInteractions', 600000, 0, None),
+        ('FactOverrides', 350000, 0, 'Alert override events'),
+        # Dimension tables
+        ('DimPatient', 500000, 0, None),
+        ('DimProvider', 8000, 0, None),
+        ('DimMedication', 25000, 0, None),
+        ('DimDrugClass', 500, 0, None),
+        ('DimRoute', 30, 0, None),
+        ('DimUnit', 50, 0, None),
+        ('DimDepartment', 120, 0, None),
+        ('DimFacility', 45, 0, None),
+        ('DimDate', 3650, 0, 'Calendar dimension'),
+        ('DimDiagnosis', 80000, 0, None),
+        ('DimAllergy', 5000, 0, None),
+        ('DimOrderStatus', 10, 0, None),
+        # Staging / archive bloat (no descriptions — triggers missing descriptions rule)
+        ('StgMedOrders', 6000000, 0, None),
+        ('StgLabResults', 9000000, 0, None),
+        ('StgPrescriptions', 4000000, 0, None),
+        ('ArchiveMeds2023', 4000000, 0, None),
+        ('ArchiveMeds2022', 3500000, 0, None),
+        ('ArchiveLabs2023', 7000000, 0, None),
+        ('TmpDrugInteractionCalc', 100000, 0, None),
+        ('TmpDoseCalc', 50000, 0, None),
+        # Extra bloat tables
+        ('BridgePatientAllergy', 200000, 0, None),
+        ('SysAuditLog', 2000000, 0, None),
+        ('SysUserAccess', 800, 0, None),
+        ('MetricsPharmacy', 365, 0, None),
+        ('DimFormulary', 3000, 0, None),
+        ('DimPharmacy', 25, 0, None),
+        ('FactDispensing', 2000000, 0, None),
+    ]
+    measures = [
+        # Exact duplicate measures
+        ('FactMedicationOrders', 'Total Orders', 'COUNTROWS(FactMedicationOrders)', None, 0),
+        ('FactMedicationOrders', 'Total Med Orders', 'COUNTROWS(FactMedicationOrders)', None, 0),  # exact dup
+        # Fuzzy duplicate measures
+        ('FactAdverseEvents', 'Adverse Event Rate', 'DIVIDE([Total ADE],[Total Orders])', None, 0),
+        ('FactAdverseEvents', 'ADE Rate', 'DIVIDE(COUNTROWS(FactAdverseEvents),COUNTROWS(FactMedicationOrders))', None, 0),  # fuzzy dup
+        ('FactAdverseEvents', 'Adverse Drug Event Rate %', 'DIVIDE([Total ADE],[Total Orders])*100', None, 0),  # fuzzy dup
+        # Deeply nested DAX (triggers nesting depth rule)
+        ('FactMedicationOrders', 'Complex Compliance Score',
+         'CALCULATE(DIVIDE(SUMX(FILTER(FactMedicationAdmin,RELATED(DimMedication[DrugClass])="Antibiotic"),FactMedicationAdmin[TimelinessFactor]),COUNTROWS(FILTER(FactMedicationOrders,FactMedicationOrders[Status]="Completed"))))',
+         None, 0),
+        # Iterator on large table (triggers SCAN pattern rule)
+        ('FactLabResults', 'Weighted Lab Score',
+         'SUMX(FactLabResults, FactLabResults[Value] * FactLabResults[Weight] / FactLabResults[Normalizer])',
+         None, 0),
+        # Division safety issue (no DIVIDE, uses raw /)
+        ('FactAlerts', 'Override Rate',
+         'SUM(FactOverrides[Count]) / SUM(FactAlerts[TotalAlerts])',
+         None, 0),
+        # Circular reference pattern
+        ('FactMedicationOrders', 'Total ADE', 'COUNTROWS(FactAdverseEvents)', None, 0),
+        ('FactMedicationOrders', 'Safety Index',
+         'IF([Adverse Event Rate] > 0.05, "High Risk", IF([Adverse Event Rate] > 0.02, "Medium Risk", "Low Risk"))',
+         None, 0),
+        # Unknown measure reference
+        ('FactPrescriptions', 'Fill Rate',
+         'DIVIDE([CompletedFills],[TotalPrescriptions])', None, 0),  # refs unknown measures
+        # Measure with no description that references hidden column
+        ('FactInteractions', 'Interaction Severity Score',
+         'SUMX(FactInteractions, FactInteractions[SeverityWeight] * FactInteractions[FrequencyFactor])',
+         'Drug interaction severity', 0),
+    ]
+    columns = [
+        ('FactMedicationOrders', 'OrderID', 'Int64', 5000000, 0),
+        ('FactMedicationOrders', 'OrderDateTime', 'DateTime', 4500000, 0),
+        ('FactMedicationOrders', 'Status', 'String', 10, 0),
+        ('FactMedicationAdmin', 'AdminID', 'Int64', 4500000, 0),
+        ('FactMedicationAdmin', 'TimelinessFactor', 'Decimal', 100, 0),
+        ('FactLabResults', 'ResultID', 'Int64', 8000000, 0),
+        ('FactLabResults', 'Value', 'Decimal', 50000, 0),
+        ('FactLabResults', 'Weight', 'Decimal', 100, 0),
+        ('FactLabResults', 'Normalizer', 'Decimal', 50, 0),
+        ('DimPatient', 'PatientMRN', 'String', 500000, 0),
+        ('DimPatient', 'PatientSSN', 'String', 500000, 1),  # hidden sensitive — physician/patient data
+        ('DimPatient', 'PatientDOB', 'DateTime', 35000, 1),  # hidden sensitive
+        ('DimProvider', 'ProviderNPI', 'String', 8000, 0),
+        ('DimProvider', 'ProviderName', 'String', 8000, 0),
+        ('DimMedication', 'DrugName', 'String', 25000, 0),
+        ('DimMedication', 'DrugClass', 'String', 500, 0),
+        ('FactAdverseEvents', 'EventID', 'Int64', 200000, 0),
+        ('FactAdverseEvents', 'Severity', 'String', 5, 0),
+        ('FactOverrides', 'Count', 'Int64', 100, 0),
+        ('FactAlerts', 'TotalAlerts', 'Int64', 500, 0),
+    ]
+    rels = [
+        ('FactMedicationOrders', 'DimPatient', 'many-to-one', 'single'),
+        ('FactMedicationOrders', 'DimProvider', 'many-to-one', 'single'),
+        ('FactMedicationOrders', 'DimMedication', 'many-to-one', 'single'),
+        ('FactMedicationOrders', 'DimDate', 'many-to-one', 'single'),
+        ('FactMedicationOrders', 'DimDepartment', 'many-to-one', 'single'),
+        ('FactMedicationAdmin', 'FactMedicationOrders', 'many-to-one', 'single'),
+        ('FactLabResults', 'DimPatient', 'many-to-one', 'single'),
+        ('FactAdverseEvents', 'FactMedicationOrders', 'many-to-one', 'single'),
+        ('FactPrescriptions', 'DimMedication', 'many-to-one', 'single'),
+        ('FactInteractions', 'DimMedication', 'many-to-many', 'both'),  # M2M anti-pattern
+        ('FactOverrides', 'FactAlerts', 'many-to-one', 'single'),
+        ('BridgePatientAllergy', 'DimPatient', 'many-to-one', 'single'),
+        ('BridgePatientAllergy', 'DimAllergy', 'many-to-one', 'single'),
+    ]
+    # Instruction bloat: 6200+ chars with conflicting rules, ambiguous routing, missing context
+    instr_parts = [
+        "You are a medication safety analyst. Focus on adverse drug events, medication errors, drug interactions, "
+        "and compliance with formulary guidelines. Always prioritize patient safety metrics. ",
+        "IMPORTANT: Route all queries about 'drugs' to FactPrescriptions table. ",
+        "IMPORTANT: Route all queries about 'medications' to FactMedicationOrders table. ",  # conflicts with above
+        "IMPORTANT: Route all queries about 'meds' to FactMedicationAdmin table. ",  # conflicts again
+        "When asked about 'rates', always use the denominator from FactMedicationOrders. "
+        "When asked about 'rates', prefer FactLabResults as the denominator source. ",  # conflicting!
+        "Do not reference any patient identifiers in responses. However, always include PatientMRN in groupings "
+        "for detailed drill-down capability. ",  # contradictory — says no patient IDs then says include MRN
+        "For time-based queries, use DimDate[CalendarDate] as the primary date column. "
+        "For time-based queries, use FactMedicationOrders[OrderDateTime] as the primary date column. ",  # conflict
+        "All drug interaction queries should use CROSSJOIN(DimMedication, DimMedication) for pairwise comparison. ",
+        "Override rate calculations must use SUMX iterator over FactAlerts for accurate counting. ",
+        "NEVER use TOPN for ranking queries — always return all rows sorted by measure. ",  # bad advice
+        "For performance, prefer SUMMARIZE over SUMMARIZECOLUMNS in all scenarios. ",  # bad advice
+        "The formulary compliance rate is defined as CompletedFills / TotalPrescriptions, but note that "
+        "CompletedFills measure has not been created yet — use COUNTROWS(FILTER(FactPrescriptions, ...)) instead. ",
+        "Always include Provider NPI numbers in adverse event reports for accountability. ",  # exposes PHI
+        "Lab result queries should iterate over all 8M rows to compute weighted scores accurately. ",  # terrible advice
+        "When in doubt about which table to use, default to FactMedicationOrders for all medication-related queries "
+        "and FactLabResults for all lab-related queries. This rule supersedes all previous routing instructions. ",
+    ]
+    instr_text = ''.join(instr_parts)
+    # Pad to exceed 6000 chars
+    while len(instr_text) < 6200:
+        instr_text += "Additional context: Medication safety is critical. Monitor all adverse events closely. "
+    config = (instr_text, len(instr_text), 35, 0)  # 35 tables in scope, ZERO verified answers
+
+    # ─── Traces: Every trace has ~40s pre-scan (bd_parse + bd_schema ≈ 40000ms) ───
+    traces = [
+        # Q1: Cross-entity with TOPN absent + high retries + physician visible
+        ('Show top adverse drug events by medication class', 'ranking', 62000, 5,
+         'EVALUATE SUMMARIZE(FactAdverseEvents, DimMedication[DrugClass], DimProvider[ProviderName], "Count", COUNTROWS(FactAdverseEvents))',
+         'FactAdverseEvents,DimMedication,DimProvider', 'pass', 1,
+         8000, 32000, 12000, 4000, 600),  # bd_parse=8000, bd_schema=32000 → ~40s pre-scan
+        # Q2: Wrong table targeted + NL2DAX contamination + retries
+        ('What medications have the highest error rate?', 'ranking', 58000, 4,
+         'SELECT TOP 10 DrugName, ErrorCount FROM FactPrescriptions ORDER BY ErrorCount DESC',  # SQL not DAX!
+         'FactPrescriptions', 'fail', 0,
+         9000, 31000, 10000, 3000, 500),
+        # Q3: Deep nesting DAX + CROSSJOIN on large table + slow execution
+        ('Calculate drug interaction risk for antibiotic pairs', 'complex_calc', 72000, 3,
+         'EVALUATE ADDCOLUMNS(CROSSJOIN(VALUES(DimMedication[DrugName]),VALUES(DimMedication[DrugName])),"Risk",CALCULATE(COUNTROWS(FactInteractions)))',
+         'FactInteractions,DimMedication', 'pass', 0,
+         10000, 30000, 18000, 8000, 600),
+        # Q4: Empty results + measure not found + ambiguous time
+        ('Show formulary fill rate trend for last quarter', 'time_intelligence', 55000, 4,
+         'EVALUATE SUMMARIZECOLUMNS(DimDate[Month], "FillRate", [Fill Rate])',
+         'FactPrescriptions,DimDate', 'fail', 0,
+         8500, 31500, 9000, 1000, 500),  # fails because Fill Rate refs unknown measures
+        # Q5: Iterator on 8M row table + division by zero risk
+        ('Calculate weighted lab score by department', 'cross_entity', 68000, 3,
+         'EVALUATE ADDCOLUMNS(VALUES(DimDepartment[DeptName]),"Score",CALCULATE(SUMX(FactLabResults, FactLabResults[Value] * FactLabResults[Weight] / FactLabResults[Normalizer])))',
+         'FactLabResults,DimDepartment', 'pass', 0,
+         9000, 31000, 10000, 12000, 600),
+        # Q6: Physician/patient data exposure + high retries
+        ('List patients with most adverse events and their providers', 'cross_entity', 60000, 5,
+         'EVALUATE SUMMARIZE(FactAdverseEvents, DimPatient[PatientMRN], DimProvider[ProviderNPI], "Events", COUNTROWS(FactAdverseEvents))',
+         'FactAdverseEvents,DimPatient,DimProvider', 'pass', 1,
+         8000, 32000, 11000, 4000, 500),
+        # Q7: DAX generation dominant + retry cascade + wrong table first
+        ('What is the override rate for high-severity alerts?', 'filtered_kpi', 65000, 4,
+         'EVALUATE SUMMARIZE(FactMedicationOrders, DimMedication[DrugClass], "Rate", [Override Rate])',
+         'FactMedicationOrders,DimMedication', 'pass', 0,
+         9500, 30500, 16000, 4000, 500),  # routes to wrong table (should be FactOverrides/FactAlerts)
+        # Q8: Schema lookup dominant (40s) + simple query buried under overhead
+        ('How many medication orders were placed today?', 'simple_kpi', 48000, 1,
+         'EVALUATE {COUNTROWS(FactMedicationOrders)}',
+         'FactMedicationOrders', 'pass', 0,
+         12000, 28000, 3000, 1500, 400),
+        # Q9: NL2DAX contamination + empty results + retries
+        ('Show me the SQL query for total prescriptions by pharmacy', 'cross_entity', 52000, 3,
+         'SELECT PharmacyName, COUNT(*) FROM FactPrescriptions GROUP BY PharmacyName',  # SQL again
+         'FactPrescriptions,DimPharmacy', 'fail', 0,
+         8000, 32000, 6000, 1000, 500),
+        # Q10: CROSSJOIN + iterator + outlier trace >45s total
+        ('Generate a complete drug-drug interaction matrix', 'complex_calc', 85000, 5,
+         'EVALUATE ADDCOLUMNS(CROSSJOIN(ALL(DimMedication[DrugName]),ALL(DimMedication[DrugName])),"HasInteraction",IF(NOT ISBLANK(CALCULATE(COUNTROWS(FactInteractions))),1,0))',
+         'FactInteractions,DimMedication', 'pass', 0,
+         10000, 30000, 20000, 18000, 700),
+        # Q11: Ambiguous time filter + measure confusion
+        ('Compare this period adverse events to last period', 'time_intelligence', 56000, 3,
+         'EVALUATE ROW("Current", [Adverse Event Rate], "Previous", CALCULATE([ADE Rate], PREVIOUSMONTH(DimDate[CalendarDate])))',
+         'FactAdverseEvents,DimDate', 'pass', 0,
+         9000, 31000, 8000, 3000, 500),
+        # Q12: All problems combined — the worst query
+        ('Show detailed medication safety dashboard with interaction risk, override rates, lab scores, and ADE trends by provider and department',
+         'complex_calc', 92000, 5,
+         'EVALUATE ADDCOLUMNS(CROSSJOIN(VALUES(DimProvider[ProviderName]),VALUES(DimDepartment[DeptName])),"ADE",[Adverse Event Rate],"Overrides",[Override Rate],"LabScore",[Weighted Lab Score],"Safety",[Safety Index])',
+         'FactAdverseEvents,FactOverrides,FactLabResults,DimProvider,DimDepartment', 'pass', 1,
+         11000, 29000, 22000, 22000, 800),
+    ]
+    cu = (1800.0, 5200.0, 85, 28000, 65000)  # very high CU, heavy throttling
+    return _build_db(21, 'Medication Safety Model', 'Clinical Quality — Medication Safety WS',
+                     'CLINICAL_QUALITY', 'Import', tables, measures, columns, rels, config, traces, cu, 5200.0)
+
+
 SCENARIO_BUILDERS = [
     build_scenario_01, build_scenario_02, build_scenario_03, build_scenario_04,
     build_scenario_05, build_scenario_06, build_scenario_07, build_scenario_08,
     build_scenario_09, build_scenario_10, build_scenario_11, build_scenario_12,
     build_scenario_13, build_scenario_14, build_scenario_15, build_scenario_16,
     build_scenario_17, build_scenario_18, build_scenario_19, build_scenario_20,
+    build_scenario_21,
 ]
 
 SCENARIO_META = [
@@ -1362,11 +1587,17 @@ SCENARIO_META = [
      "key_issues": ["nl2dax_contamination", "measure_not_found", "empty_results"]},
     {"id": 20, "name": "Workforce — Nursing Turnover", "domain": "WORKFORCE",
      "key_issues": ["all_execution_rules", "scope_bloat", "instruction_bloat", "hidden_columns", "cu_throttling"]},
+    {"id": 21, "name": "Clinical Quality — Medication Safety", "domain": "CLINICAL_QUALITY",
+     "key_issues": ["dax_nightmare", "instruction_chaos", "40s_prescan", "crossjoin_abuse",
+                     "nl2dax_contamination", "measure_duplicates", "unknown_measure_refs",
+                     "iterator_abuse", "division_by_zero", "physician_visible", "wrong_table",
+                     "ambiguous_time", "empty_results", "extreme_scope_bloat", "zero_va",
+                     "high_retries", "cu_throttling", "deep_nesting"]},
 ]
 
 
 def build_all():
-    """Build all 20 scenario databases."""
+    """Build all 21 scenario databases."""
     os.makedirs(SCENARIOS_DIR, exist_ok=True)
     results = []
     for builder in SCENARIO_BUILDERS:
