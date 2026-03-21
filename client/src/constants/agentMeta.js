@@ -80,13 +80,21 @@ export const AGENTS = {
     order: 8,
     description: 'Generates paste-ready artifacts for Prep for AI',
   },
-  validation: {
-    id: 'validation',
-    name: 'Validation Agent',
+  finding_validator: {
+    id: 'finding_validator',
+    name: 'Finding Validator',
     glyph: '✓',
     accent: 'var(--teal)',
     order: 9,
-    description: 'On-demand fix validation with before/after measurement',
+    description: 'Validates individual findings for accuracy, severity, and evidence consistency',
+  },
+  report_validator: {
+    id: 'report_validator',
+    name: 'Report Validator',
+    glyph: '📋',
+    accent: 'var(--teal)',
+    order: 10,
+    description: 'Validates overall report quality, completeness, gaps, and demo readiness',
   },
 };
 
@@ -101,5 +109,6 @@ export const AGENT_ORDER = [
   'synthesis',
   'monte_carlo',
   'remediation',
-  'validation',
+  'finding_validator',
+  'report_validator',
 ];

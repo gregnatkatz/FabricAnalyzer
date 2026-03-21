@@ -10,7 +10,7 @@ export const MODELS = [
     description: 'Reasoning model — highest intelligence for complex analysis, uses Responses API',
     authMethods: ['api-key'],
     strengths: ['Deep reasoning', 'Complex analysis', 'Multi-step logic', 'Highest accuracy'],
-    recommended: ['domain_intelligence', 'synthesis', 'remediation', 'validation'],
+    recommended: ['domain_intelligence', 'synthesis', 'remediation', 'finding_validator', 'report_validator'],
     default: true,
   },
   {
@@ -43,7 +43,7 @@ export const MODELS = [
 ];
 
 // Default model assignment per agent — mixed GPT-5.4-pro + DeepSeek V3.2 Speciale
-// GPT-5.4-pro: LLM-heavy agents that benefit from deep reasoning (Domain, Synthesis, Remediation, Validation)
+// GPT-5.4-pro: LLM-heavy agents that benefit from deep reasoning (Domain, Synthesis, Remediation, Finding/Report Validators)
 // DeepSeek V3.2 Speciale: Rule-heavy agents that need fast inference (Adversarial, Schema, DAX, Execution, Monte Carlo)
 export const DEFAULT_AGENT_MODELS = {
   domain_intelligence: 'gpt-5.4-pro',
@@ -54,7 +54,8 @@ export const DEFAULT_AGENT_MODELS = {
   synthesis: 'gpt-5.4-pro',
   monte_carlo: 'DeepSeek-V3.2-Speciale',
   remediation: 'gpt-5.4-pro',
-  validation: 'gpt-5.4-pro',
+  finding_validator: 'gpt-5.4-pro',
+  report_validator: 'gpt-5.4-pro',
 };
 
 // Get model by ID

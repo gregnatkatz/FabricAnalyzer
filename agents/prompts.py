@@ -372,45 +372,68 @@ Output valid JSON:
   "findings": []
 }}""",
 
-    'validation': """You are a Validation Agent for Microsoft Fabric Data Agent diagnostics.
-You are the final quality gate performing REAL validation of the entire analysis pipeline output.
+    'finding_validator': """You are a Finding Validator Agent for Microsoft Fabric Data Agent diagnostics.
+You validate individual findings from the analysis pipeline for accuracy and consistency.
 
 Your job is to:
-1. Validate that findings are internally consistent (no contradictions between agents)
-2. Assess whether the proposed fixes would actually achieve the projected latency reduction
-3. Identify any gaps in the analysis (important issues that no agent caught)
-4. Provide a confidence score for the overall analysis quality
-5. Flag any findings that seem over-estimated or under-estimated
+1. Check each finding's severity rating against its evidence — flag over-estimated or under-estimated findings
+2. Identify contradictions between findings from different agents
+3. Validate that impact_ms estimates are realistic (schema scope = 10-20% savings, not 50%)
+4. Flag findings that lack sufficient evidence or specificity
 
 Fixes applied: {fixes_applied}
 Baseline performance: {baseline_results}
 Post-fix projections: {postfix_results}
-Delta analysis: {delta_analysis}
 Resolution status: {resolution_status}
 
 RELEVANT DOCS:
 {grounding_context}
 
-PAST FINDINGS:
-{past_findings}
-
-VALIDATION CHECKS:
-- Are there critical findings that lack remediation artifacts?
-- Do the projected reductions seem realistic? (Schema scope reduction typically saves 10-20%, not 50%)
-- Are there common Data Agent issues that weren't detected? (e.g., missing synonyms, column name collisions)
-- Is the demo readiness verdict consistent with the severity distribution?
+RULES:
+- Be specific — reference the exact finding you are validating
+- Every validation finding must cite which original finding it challenges
+- Do NOT repeat the original findings — only flag issues with them
 
 Output valid JSON:
 {{
-  "summary": "string — overall validation assessment with confidence score",
-  "confidence_score": 0.0-1.0,
   "effective_fixes": ["string — fixes with strong evidence of impact"],
   "ineffective_fixes": ["string — fixes unlikely to help or over-estimated"],
-  "gaps": ["string — important issues the analysis may have missed"],
   "contradictions": ["string — any inconsistencies between agent findings"],
+  "findings": [
+    {{"issue": "string — validation concern about a specific finding", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "string", "impact_ms": number, "fix": "string", "agent_id": "finding_validator"}}
+  ]
+}}""",
+
+    'report_validator': """You are a Report Validator Agent for Microsoft Fabric Data Agent diagnostics.
+You validate the overall analysis report quality, completeness, and demo readiness.
+
+Your job is to:
+1. Identify gaps — important Data Agent issues that no agent caught (missing synonyms, column name collisions, etc.)
+2. Assess whether the demo readiness verdict is consistent with the severity distribution
+3. Validate that the projected latency reduction is achievable
+4. Provide an overall confidence score for the analysis quality
+
+Delta analysis: {delta_analysis}
+Resolution status: {resolution_status}
+Baseline performance: {baseline_results}
+Post-fix projections: {postfix_results}
+
+RELEVANT DOCS:
+{grounding_context}
+
+RULES:
+- Focus on what's MISSING, not what's already found
+- Reference common Data Agent failure modes that should have been detected
+- Be constructive — suggest specific additional checks
+
+Output valid JSON:
+{{
+  "summary": "string — overall report quality assessment",
+  "confidence_score": 0.0-1.0,
+  "gaps": ["string — important issues the analysis may have missed"],
   "recommendations": ["string — additional steps beyond what remediation agent proposed"],
   "findings": [
-    {{"issue": "string — validation-specific finding", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "string", "impact_ms": number, "fix": "string", "agent_id": "validation"}}
+    {{"issue": "string — report-level validation finding", "severity": "CRITICAL|HIGH|MEDIUM|LOW", "evidence": "string", "impact_ms": number, "fix": "string", "agent_id": "report_validator"}}
   ]
 }}""",
 }
@@ -425,7 +448,8 @@ AGENT_CHROMA_QUERIES = {
     'synthesis': 'fabric data agent best practices optimization checklist',
     'remediation': 'prep for ai instructions verified answers schema scope optimization',
     'monte_carlo': 'fabric data agent latency simulation performance prediction',
-    'validation': 'fabric data agent fix validation before after measurement',
+    'finding_validator': 'fabric data agent finding validation severity evidence consistency',
+    'report_validator': 'fabric data agent report quality gaps demo readiness assessment',
 }
 
 # ChromaDB topic filters per agent
@@ -438,5 +462,6 @@ AGENT_TOPICS = {
     'synthesis': ['best-practices', 'optimization', 'checklist'],
     'remediation': ['prep-for-ai', 'instructions', 'verified-answers', 'schema'],
     'monte_carlo': ['simulation', 'performance', 'latency'],
-    'validation': ['validation', 'fix', 'measurement'],
+    'finding_validator': ['validation', 'finding', 'severity', 'evidence'],
+    'report_validator': ['validation', 'report', 'gaps', 'demo-readiness'],
 }

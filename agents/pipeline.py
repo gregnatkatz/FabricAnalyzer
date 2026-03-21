@@ -1,4 +1,4 @@
-"""Main pipeline orchestrator — runs 11 agents (agents 3-7 in parallel).
+"""Main pipeline orchestrator — runs 12 agents (agents 3-7 in parallel, agents 9a+9b in parallel).
 Called by server/proxy.js via subprocess.
 
 Usage: python pipeline.py --db <path> --session-id <id> --agent <agent_id|all> ...
@@ -588,17 +588,17 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
         else:
             results['remediation'] = {'artifacts': {}}
 
-    # Agent 9: Validation (Phi-4 Reasoning)
-    if agent_filter in ('all', 'validation'):
-        print('[pipeline] Running Agent 9: Validation', file=sys.stderr)
-        # Validation runs as a post-pipeline assessment of fix effectiveness
-        # It uses the Monte Carlo results + synthesis to produce a final verdict
+    # Agents 9a+9b: Finding Validator + Report Validator (run in parallel)
+    # Split from single Validation agent to avoid GPT-5.4 Pro timeouts.
+    # Smaller prompts = faster responses, and they're independent tasks.
+    if agent_filter in ('all', 'validation', 'finding_validator', 'report_validator'):
+        print('[pipeline] Running Agents 9a+9b: Finding Validator + Report Validator (parallel)', file=sys.stderr)
         mc_result = results.get('monte_carlo', {})
         synthesis_result = results.get('synthesis', {})
         remediation_result = results.get('remediation', {})
 
         if proxy_url and (mc_result or synthesis_result):
-            # Build validation context from pipeline results
+            # Build shared validation context
             baseline_results = json.dumps({
                 'avg_ms': mc_result.get('baseline', {}).get('avg_ms', 0),
                 'p95_ms': mc_result.get('baseline', {}).get('p95_ms', 0),
@@ -622,21 +622,75 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
                 'has_artifacts': bool(remediation_result.get('artifacts')),
             })
 
-            template_vars = {
-                'fixes_applied': json.dumps(mc_result.get('active_fixes', [])),
-                'baseline_results': baseline_results,
-                'postfix_results': postfix_results,
-                'delta_analysis': delta_analysis,
-                'resolution_status': resolution_status,
+            # Run both validators in parallel via ThreadPoolExecutor
+            def _run_finding_validator():
+                tv = {
+                    'fixes_applied': json.dumps(mc_result.get('active_fixes', [])),
+                    'baseline_results': baseline_results,
+                    'postfix_results': postfix_results,
+                    'resolution_status': resolution_status,
+                }
+                # Use the validation model setting (user picks one model for both)
+                model = agent_models.get('finding_validator') or agent_models.get('validation')
+                return run_agent_with_llm(
+                    'finding_validator', 'finding_validator', tv,
+                    proxy_url, chromadb_path, session_id,
+                    model_override=model,
+                )
+
+            def _run_report_validator():
+                tv = {
+                    'delta_analysis': delta_analysis,
+                    'resolution_status': resolution_status,
+                    'baseline_results': baseline_results,
+                    'postfix_results': postfix_results,
+                }
+                model = agent_models.get('report_validator') or agent_models.get('validation')
+                return run_agent_with_llm(
+                    'report_validator', 'report_validator', tv,
+                    proxy_url, chromadb_path, session_id,
+                    model_override=model,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as val_executor:
+                fv_future = val_executor.submit(_run_finding_validator)
+                rv_future = val_executor.submit(_run_report_validator)
+
+            # Collect results
+            try:
+                fv_findings, fv_data = fv_future.result(timeout=300)
+                print(f'[pipeline] finding_validator: {len(fv_findings)} findings (parallel complete)', file=sys.stderr)
+                all_findings.extend(fv_findings)
+                write_findings_to_db(db_path, fv_findings, agent_id_override='finding_validator')
+                results['finding_validator'] = fv_data
+            except Exception as e:
+                print(f'[pipeline] finding_validator failed: {e}', file=sys.stderr)
+                results['finding_validator'] = {'findings': [], 'error': str(e)}
+
+            try:
+                rv_findings, rv_data = rv_future.result(timeout=300)
+                print(f'[pipeline] report_validator: {len(rv_findings)} findings (parallel complete)', file=sys.stderr)
+                all_findings.extend(rv_findings)
+                write_findings_to_db(db_path, rv_findings, agent_id_override='report_validator')
+                results['report_validator'] = rv_data
+            except Exception as e:
+                print(f'[pipeline] report_validator failed: {e}', file=sys.stderr)
+                results['report_validator'] = {'findings': [], 'error': str(e)}
+
+            # Merge into combined validation result for backward compatibility
+            fv_out = results.get('finding_validator', {})
+            rv_out = results.get('report_validator', {})
+            results['validation'] = {
+                'summary': rv_out.get('summary', ''),
+                'confidence_score': rv_out.get('confidence_score', 0),
+                'effective_fixes': fv_out.get('effective_fixes', []),
+                'ineffective_fixes': fv_out.get('ineffective_fixes', []),
+                'gaps': rv_out.get('gaps', []),
+                'contradictions': fv_out.get('contradictions', []),
+                'recommendations': rv_out.get('recommendations', []),
             }
-            llm_findings, validation_data = run_agent_with_llm(
-                'validation', 'validation', template_vars, proxy_url, chromadb_path, session_id,
-                model_override=agent_models.get('validation'),
-            )
-            results['validation'] = validation_data
-            all_findings.extend(llm_findings)
         else:
-            # Fallback validation without LLM — produce deterministic summary
+            # Fallback validation without LLM
             mc_baseline = mc_result.get('baseline', {}).get('avg_ms', 0)
             mc_projected = mc_result.get('projected', {}).get('p50', 0)
             reduction = round((mc_baseline - mc_projected) / max(mc_baseline, 1) * 100, 1) if mc_baseline else 0
