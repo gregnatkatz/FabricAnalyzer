@@ -320,7 +320,7 @@ FabricAnalyzer/
 │   └── wipe.py                      # Data cleanup
 ├── sample_dataset/
 │   ├── build_sample.py              # Sample DB builder + schema SQL
-│   ├── build_scenarios.py           # 20 test scenarios across 8 domains
+│   ├── build_scenarios.py           # 21 test scenarios across 8 domains
 │   ├── known_issues.json            # 25 known issue patterns
 │   ├── sample.db                    # Pre-built sample database
 │   └── scenarios/                   # Domain-specific scenario files

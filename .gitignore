@@ -10,4 +10,5 @@ server/.env
 dist/
 *.db
 !sample_dataset/sample.db
+!sample_dataset/scenarios/*.db
 .DS_Store

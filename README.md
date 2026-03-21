@@ -11,7 +11,7 @@ A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces
 - **Monte Carlo Simulation** — 500-iteration client-side math model with instant fix toggle projections
 - **CU Cost Correlation** — AI CU, Query CU, Throttle Events, P50/P95 latency with estimated CU savings
 - **Live Fabric Integration** — Connect via OAuth or token paste, auto-detect Data Agents and semantic models
-- **20 Test Scenarios** — Pre-built scenarios across 8 domains (Revenue Cycle, Supply Chain, Clinical, Financial, etc.)
+- **21 Test Scenarios** — Pre-built scenarios across 8 domains (Revenue Cycle, Supply Chain, Clinical, Financial, etc.) including a DAX stress-test scenario with 40s pre-scan latency
 - **Adaptive Question Battery** — 30-50 domain-specific questions auto-generated from semantic model schema
 - **XMLA Deep Analysis** — Automatic XMLA collection via Admin Scanner API for any connected workspace (supports Direct Lake models)
 - **Microsoft Learn Integration** — Cross-references findings with curated MS Learn best practices (12 articles, 70+ practices)
@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/walkthrough.mp4
 ## Screenshots
 
 ### Connect Tab
-Connect to a Fabric workspace via OAuth or token paste, or load the built-in sample dataset. Supports 20 pre-built test scenarios across 8 healthcare domains.
+Connect to a Fabric workspace via OAuth or token paste, or load the built-in sample dataset. Supports 21 pre-built test scenarios across 8 healthcare domains.
 
 ![Connect Tab](docs/screenshots/01-connect-tab.png)
 

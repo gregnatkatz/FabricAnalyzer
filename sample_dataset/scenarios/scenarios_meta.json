@@ -203,5 +203,30 @@
       "hidden_columns",
       "cu_throttling"
     ]
+  },
+  {
+    "id": 21,
+    "name": "Clinical Quality \u2014 Medication Safety",
+    "domain": "CLINICAL_QUALITY",
+    "key_issues": [
+      "dax_nightmare",
+      "instruction_chaos",
+      "40s_prescan",
+      "crossjoin_abuse",
+      "nl2dax_contamination",
+      "measure_duplicates",
+      "unknown_measure_refs",
+      "iterator_abuse",
+      "division_by_zero",
+      "physician_visible",
+      "wrong_table",
+      "ambiguous_time",
+      "empty_results",
+      "extreme_scope_bloat",
+      "zero_va",
+      "high_retries",
+      "cu_throttling",
+      "deep_nesting"
+    ]
   }
 ]

@@ -1,4 +1,4 @@
-"""Run all 20 test scenarios through the deterministic checks and generate a report.
+"""Run all 21 test scenarios through the deterministic checks and generate a report.
 
 Tests each scenario database against all 29 deterministic rules (11 schema + 9 DAX + 9 execution)
 and produces a comprehensive test report showing detection coverage.
@@ -40,12 +40,12 @@ def run_scenario(scenario_id):
 
 
 def run_all():
-    """Run all 20 scenarios and generate report."""
+    """Run all 21 scenarios and generate report."""
     with open(META_PATH) as f:
         meta = json.load(f)
 
     print('=' * 100)
-    print('FABRIC DATA AGENT LATENCY ANALYZER — 20-SCENARIO TEST REPORT')
+    print('FABRIC DATA AGENT LATENCY ANALYZER — 21-SCENARIO TEST REPORT')
     print('=' * 100)
     print()
 
