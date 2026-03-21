@@ -54,15 +54,16 @@ def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override
 
     # Reasoning models: max_output_tokens is shared between reasoning AND message content.
     # With too-low a value the model spends all tokens on reasoning and returns 0 content.
-    # Use 16384 so the proxy sends a large enough budget for both reasoning + response.
+    # Use 8192 so the proxy sends enough budget for reasoning + response without timeouts.
+    # If a prompt is too complex (e.g. Remediation), the pipeline falls back to DeepSeek fast.
     effective_max_tokens = max_tokens
     if model_override and model_override in REASONING_MODELS:
-        effective_max_tokens = max(max_tokens, 16384)
+        effective_max_tokens = max(max_tokens, 8192)
 
     # Build retry sequence: for reasoning models, retry the model itself (proxy does
     # escalating timeouts 60s/90s/120s per attempt), then fall back to DeepSeek.
     # Pipeline-level retries give the proxy multiple chances with its own retry loop.
-    REASONING_RETRIES = 3  # Number of times to try the reasoning model before fallback
+    REASONING_RETRIES = 1  # Try reasoning model once, then fall back to DeepSeek fast
     models_to_try = []
     if model_override and model_override in REASONING_MODELS:
         models_to_try = [model_override] * REASONING_RETRIES + [DEFAULT_FALLBACK_MODEL]
@@ -80,9 +81,9 @@ def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override
                 payload['modelOverride'] = model
             label = f' (model: {model}, attempt {attempt+1}/{len(models_to_try)})' if model else ''
             print(f'[pipeline] LLM call{label}', file=sys.stderr)
-            # Reasoning models: proxy retries with escalating timeouts (180/240/300s)
-            # so use a generous pipeline-level timeout to let the proxy finish its retries
-            req_timeout = 320 if is_reasoning else 190
+            # Reasoning models: proxy retries with escalating timeouts (240/360/480s)
+            # so use a very generous pipeline-level timeout to let the proxy finish its retries
+            req_timeout = 500 if is_reasoning else 190
             resp = requests.post(
                 f'{proxy_url}/api/agent',
                 json=payload,
