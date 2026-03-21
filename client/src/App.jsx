@@ -7,6 +7,7 @@ import FindingsTab from './components/FindingsTab';
 import SimulationTab from './components/SimulationTab';
 import ValidationTab from './components/ValidationTab';
 import ArtifactsTab from './components/ArtifactsTab';
+import TrendingTab from './components/TrendingTab';
 import ReportView from './report/ReportView';
 import StatusHeader from './components/StatusHeader';
 
@@ -18,6 +19,7 @@ const TABS = [
   { id: 'simulation', label: 'Simulation', icon: '📈' },
   { id: 'validation', label: 'Validation', icon: '✓' },
   { id: 'artifacts', label: 'Artifacts', icon: '📄' },
+  { id: 'trending', label: 'Trending', icon: '📈' },
 ];
 
 function App() {
@@ -46,7 +48,7 @@ function App() {
   });
 
   const updateSession = useCallback((updates) => {
-    setSessionState(prev => ({ ...prev, ...updates }));
+    setSessionState(prev => ({ ...prev, ...updates, lastUpdated: Date.now() }));
   }, []);
 
   const handleReset = useCallback(async (scope = 'full') => {
@@ -123,6 +125,8 @@ function App() {
         return <ValidationTab session={sessionState} updateSession={updateSession} />;
       case 'artifacts':
         return <ArtifactsTab session={sessionState} />;
+      case 'trending':
+        return <TrendingTab session={sessionState} />;
       default:
         return null;
     }

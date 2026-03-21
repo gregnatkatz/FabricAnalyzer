@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AGENTS } from '../constants/agentMeta';
+import { enrichFindingsWithMsLearn, saveHistoryRun } from '../api/proxy';
 
 function FindingCard({ finding, rank, session }) {
   const [expanded, setExpanded] = useState(false);
@@ -119,6 +120,30 @@ function FindingCard({ finding, rank, session }) {
             </div>
           )}
 
+          {/* Microsoft Learn Best Practices */}
+          {finding.mslearn_refs && finding.mslearn_refs.length > 0 && (
+            <div style={{ marginBottom: 12, padding: '10px 14px', background: 'rgba(0,120,212,0.06)', borderRadius: 6, border: '1px solid rgba(0,120,212,0.15)' }}>
+              <strong style={{ color: '#0078d4', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 14 }}>MS</span> Microsoft Learn Guidance
+              </strong>
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {finding.mslearn_refs.map((ref, ri) => (
+                  <div key={ri}>
+                    <a href={ref.url} target="_blank" rel="noopener noreferrer"
+                      style={{ fontSize: 12, color: '#0078d4', textDecoration: 'none', fontWeight: 600 }}>
+                      {ref.title}
+                    </a>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
+                      {ref.best_practices.slice(0, 3).map((bp, bi) => (
+                        <li key={bi} style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>{bp}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Affected traces */}
           {finding.affected_traces && finding.affected_traces.length > 0 && (
             <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '6px 0', borderTop: '1px solid var(--border)', marginTop: 8 }}>
@@ -136,7 +161,37 @@ export default function FindingsTab({ session }) {
   const [filterSeverity, setFilterSeverity] = useState('all');
   const [filterAgent, setFilterAgent] = useState('all');
   const [sortBy, setSortBy] = useState('impact');
-  const findings = session.findings || [];
+  const [enrichedFindings, setEnrichedFindings] = useState(null);
+  const [historySaved, setHistorySaved] = useState(false);
+  const rawFindings = session.findings || [];
+
+  // Enrich findings with MS Learn references
+  useEffect(() => {
+    if (rawFindings.length > 0) {
+      enrichFindingsWithMsLearn(rawFindings)
+        .then(res => setEnrichedFindings(res.findings || rawFindings))
+        .catch(() => setEnrichedFindings(rawFindings));
+    } else {
+      setEnrichedFindings(null);
+    }
+  }, [rawFindings.length]);
+
+  // Auto-save to history when analysis completes
+  useEffect(() => {
+    if (session.analysisComplete && rawFindings.length > 0 && !historySaved) {
+      setHistorySaved(true);
+      saveHistoryRun({
+        workspaceId: session.workspaceId,
+        modelId: session.modelId,
+        agentName: session.modelName,
+        domain: session.domain,
+        findings: rawFindings,
+        traces: session.traces,
+      }).catch(err => console.error('Failed to save history:', err));
+    }
+  }, [session.analysisComplete, rawFindings.length, historySaved, session]);
+
+  const findings = enrichedFindings || rawFindings;
 
   const filtered = findings.filter(f =>
     (filterSeverity === 'all' || f.severity === filterSeverity) &&
