@@ -32,6 +32,15 @@ const MODEL_ENDPOINTS = {
     endpoint: process.env.LLM_ENDPOINT_DEEPSEEK || process.env.LLM_ENDPOINT,
     apiKey: process.env.LLM_API_KEY_DEEPSEEK || process.env.LLM_API_KEY,
   },
+  'gpt-5.4-pro': {
+    endpoint: process.env.LLM_ENDPOINT_GPT54 || process.env.LLM_ENDPOINT,
+    apiKey: process.env.LLM_API_KEY_GPT54 || process.env.LLM_API_KEY,
+    useResponsesApi: true,  // reasoning model — uses /openai/responses instead of chat completions
+  },
+  'gpt-4o': {
+    endpoint: process.env.LLM_ENDPOINT_GPT4O || process.env.LLM_ENDPOINT,
+    apiKey: process.env.LLM_API_KEY_GPT4O || process.env.LLM_API_KEY,
+  },
 };
 
 function getModelConfig(modelId) {
@@ -109,77 +118,144 @@ app.post('/api/agent', async (req, res) => {
     const modelConfig = getModelConfig(model);
     const endpoint = modelConfig.endpoint;
     const apiKey = modelConfig.apiKey;
+    const useResponsesApi = modelConfig.useResponsesApi || false;
 
-    // Build Azure OpenAI compatible request
+    // Build URL and body based on API type (chat completions vs responses)
     let llmUrl;
-    if (endpoint.includes('openai.azure.com')) {
-      // Azure OpenAI: use deployments/{model} URL format
-      // Strip any trailing path like /openai/v1 to get the base
+    let body;
+
+    if (useResponsesApi) {
+      // Responses API for reasoning models (gpt-5.4-pro, o1, o3-pro, etc.)
       const base = endpoint.replace(/\/openai\/v1\/?$/, '').replace(/\/+$/, '');
-      llmUrl = `${base}/openai/deployments/${model}/chat/completions?api-version=2025-01-01-preview`;
+      llmUrl = `${base}/openai/responses?api-version=2025-03-01-preview`;
+      // Responses API uses 'input' array instead of 'messages', and 'max_output_tokens' instead of 'max_tokens'
+      // System instructions go in 'instructions' field, not as a message
+      // IMPORTANT: max_output_tokens is shared between reasoning AND message content.
+      // With too-low a value, the model spends all tokens on reasoning and returns 0 message content.
+      // Use 16384 tokens to give the model room for both reasoning and a full response.
+      // Set reasoning.effort = 'medium' (minimum supported by gpt-5.4-pro; 'low' is not available).
+      // Complex pipeline prompts need generous timeouts (up to 240s) with medium reasoning.
+      const reasoningMaxTokens = Math.max(maxTokens, 16384);
+      body = {
+        model,
+        instructions: system,
+        input: [
+          { role: 'user', content: userMsg },
+        ],
+        max_output_tokens: reasoningMaxTokens,
+        reasoning: {
+          effort: 'medium',
+        },
+      };
+      console.log('[LLM] Using Responses API for reasoning model:', model, 'maxTokens:', reasoningMaxTokens, '(reasoning.effort: medium)');
     } else {
-      llmUrl = `${endpoint.replace(/\/+$/, '')}/chat/completions`;
-    }
-
-    const headers = {
-      'Content-Type': 'application/json',
-    };
-
-    // Determine auth: API key or Azure AD token
-    if (LLM_AUTH_MODE === 'api-key') {
+      // Standard Chat Completions API
       if (endpoint.includes('openai.azure.com')) {
-        headers['api-key'] = apiKey;
+        const base = endpoint.replace(/\/openai\/v1\/?$/, '').replace(/\/+$/, '');
+        llmUrl = `${base}/openai/deployments/${model}/chat/completions?api-version=2025-01-01-preview`;
       } else {
-        headers['Authorization'] = `Bearer ${apiKey}`;
+        llmUrl = `${endpoint.replace(/\/+$/, '')}/chat/completions`;
       }
-    } else {
-      // Azure AD auth
-      const adToken = await getAzureAdToken();
-      if (!adToken) {
-        return res.status(503).json({ error: 'LLM not available — no API key and Azure AD auth failed. Set LLM_API_KEY in server/.env' });
-      }
-      headers['Authorization'] = `Bearer ${adToken}`;
+      body = {
+        model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userMsg },
+        ],
+        max_tokens: maxTokens,
+        temperature: 0.2,
+      };
     }
-
-    const body = {
-      model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: userMsg },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.2,
-    };
 
     console.log('[LLM] Calling:', llmUrl);
     console.log('[LLM] Auth mode:', LLM_AUTH_MODE);
 
-    // Use curl via execSync — Node.js fetch/https hangs on Azure AI endpoints
-    const authHeader = endpoint.includes('openai.azure.com')
-      ? `-H "api-key: ${apiKey}"`
-      : `-H "Authorization: Bearer ${apiKey}"`;
+    // Use Node.js native fetch for LLM calls — much better for long-running reasoning models
+    // that can take 2-4 minutes for complex prompts. curl with -m kills the connection at the
+    // timeout boundary, wasting all processing. fetch with AbortController is more reliable.
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(endpoint.includes('openai.azure.com')
+        ? { 'api-key': apiKey }
+        : { 'Authorization': `Bearer ${apiKey}` }),
+    };
 
-    const { writeFileSync, unlinkSync } = await import('fs');
-    const tmpBodyFile = join(__dirname, '..', 'tmp', `llm_body_${Date.now()}.json`);
-    mkdirSync(join(__dirname, '..', 'tmp'), { recursive: true });
-    writeFileSync(tmpBodyFile, JSON.stringify(body));
+    // Retry logic: reasoning models get multiple attempts with escalating timeouts
+    // GPT-5.4 Pro with medium reasoning effort needs 120-300s for complex pipeline prompts.
+    // Use generous timeouts — reasoning models do deep thinking on large inputs.
+    const timeouts = useResponsesApi ? [180, 240, 300] : [180];
+    let lastError = null;
+    let data = null;
 
-    try {
-      const curlCmd = `curl -s -m 180 -X POST "${llmUrl}" -H "Content-Type: application/json" ${authHeader} -d @${tmpBodyFile}`;
-      const result = execSync(curlCmd, { encoding: 'utf8', timeout: 180000 });
-      console.log('[LLM] Got response, length:', result.length);
-
-      const data = JSON.parse(result);
-      if (data.error) {
-        console.error('LLM error:', JSON.stringify(data.error));
-        return res.status(400).json({ error: JSON.stringify(data.error) });
+    for (let attempt = 0; attempt < timeouts.length; attempt++) {
+      const timeoutSec = timeouts[attempt];
+      console.log(`[LLM] Attempt ${attempt + 1}/${timeouts.length} with ${timeoutSec}s timeout for ${model}`);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
+      try {
+        const fetchResp = await fetch(llmUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        const text = await fetchResp.text();
+        console.log('[LLM] Got response, length:', text.length);
+        data = JSON.parse(text);
+        break;  // Success — exit retry loop
+      } catch (fetchErr) {
+        clearTimeout(timer);
+        lastError = fetchErr;
+        const reason = fetchErr.name === 'AbortError' ? `timeout ${timeoutSec}s` : fetchErr.message?.substring(0, 100);
+        console.warn(`[LLM] Attempt ${attempt + 1} failed for ${model} (${reason})`);
+        if (attempt < timeouts.length - 1) {
+          console.log(`[LLM] Retrying ${model} with longer timeout (${timeouts[attempt + 1]}s)...`);
+        }
       }
-      const content = data.choices?.[0]?.message?.content || '';
-      console.log('[LLM] Success, content length:', content.length);
-      res.json({ content, usage: data.usage });
-    } finally {
-      try { unlinkSync(tmpBodyFile); } catch (_) {}
     }
+
+    if (!data) {
+      console.error(`[LLM] All ${timeouts.length} attempts failed for ${model}`);
+      throw lastError || new Error(`All retry attempts failed for ${model}`);
+    }
+    if (data.error) {
+      console.error('LLM error:', JSON.stringify(data.error));
+      return res.status(400).json({ error: JSON.stringify(data.error) });
+    }
+
+    // Extract content based on API type
+    let content;
+    if (useResponsesApi) {
+      // Responses API: output[].content[].text — try multiple extraction paths
+      console.log('[LLM] Responses API output types:', data.output?.map(o => o.type));
+      const msgOutput = data.output?.find(o => o.type === 'message');
+      if (msgOutput) {
+        console.log('[LLM] Message output content types:', msgOutput.content?.map(c => c.type));
+        content = msgOutput.content?.find(c => c.type === 'output_text')?.text || '';
+      }
+      // Fallback: try output_text at top level or text field
+      if (!content) {
+        for (const o of (data.output || [])) {
+          if (o.type === 'message' && o.content) {
+            for (const c of o.content) {
+              if (c.text) { content = c.text; break; }
+            }
+          }
+          if (content) break;
+        }
+      }
+      // Fallback: if status is 'completed' but no message output, check for text in any output
+      if (!content && data.output_text) {
+        content = data.output_text;
+      }
+      content = content || '';
+    } else {
+      // Chat Completions API: choices[].message.content
+      content = data.choices?.[0]?.message?.content || '';
+    }
+    console.log('[LLM] Success, content length:', content.length);
+    res.json({ content, usage: data.usage });
   } catch (err) {
     console.error('LLM proxy error:', err);
     res.status(500).json({ error: err.message });
@@ -769,7 +845,7 @@ db.close()
 
 // Run analysis pipeline
 app.post('/api/analyze', (req, res) => {
-  const { dbPath, sessionId, agentId, domain, sampleMode, modelOverride } = req.body;
+  const { dbPath, sessionId, agentId, domain, sampleMode, modelOverride, agentModels } = req.body;
   if (!dbPath) return res.status(400).json({ error: 'dbPath required' });
 
   const pipelineScript = join(__dirname, '..', 'agents', 'pipeline.py');
@@ -786,6 +862,11 @@ app.post('/api/analyze', (req, res) => {
     '--proxy-url', `http://localhost:${PORT}`,
   ];
   if (sampleMode) args.push('--sample-mode');
+  // Pass per-agent model map so pipeline routes each agent to its assigned model
+  if (agentModels && typeof agentModels === 'object') {
+    args.push('--agent-models', JSON.stringify(agentModels));
+    console.log('[analyze] Per-agent models:', JSON.stringify(agentModels));
+  }
 
   const py = spawn(PYTHON_PATH, args, {
     cwd: join(__dirname, '..'),
@@ -1345,18 +1426,42 @@ if not traces_list and instructions:
             {"question": "What is the total write-off amount by category this fiscal year?", "category": "aggregation", "responseTimeSec": 29},
         ]
     else:
-        # Default: healthcare / clinical inpatient domain
+        # Default: healthcare / clinical inpatient domain — 30 LOS queries with varying complexity
         test_questions = [
-            {"question": "What is the average length of stay by department?", "category": "aggregation", "responseTimeSec": 36},
-            {"question": "How many patients are in the system?", "category": "count", "responseTimeSec": 13},
-            {"question": "Show total charges by payer for surgical patients", "category": "billing", "responseTimeSec": 16},
-            {"question": "List all lab results with abnormal flags for patients admitted in January", "category": "filtering", "responseTimeSec": 28},
-            {"question": "What medications are prescribed most frequently by department?", "category": "aggregation", "responseTimeSec": 42},
-            {"question": "Show readmission rates by DRG code", "category": "aggregation", "responseTimeSec": 31},
-            {"question": "What is the average vital sign values for ICU patients?", "category": "aggregation", "responseTimeSec": 38},
-            {"question": "List patients with LOS greater than 7 days and their total charges", "category": "filtering", "responseTimeSec": 45},
-            {"question": "Show discharge disposition breakdown by department", "category": "aggregation", "responseTimeSec": 22},
-            {"question": "What are the top 10 diagnoses by patient volume?", "category": "ranking", "responseTimeSec": 19},
+            # SIMPLE (5): Single table, basic aggregations — still slow due to instruction bloat
+            {"question": "How many patient encounters are in the dataset?", "category": "count", "responseTimeSec": 28, "retries": 0, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE COUNTROWS(patient_encounters)"},
+            {"question": "What is the average length of stay across all patients?", "category": "aggregation", "responseTimeSec": 32, "retries": 1, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE AVERAGE(patient_encounters[length_of_stay])"},
+            {"question": "Show me the total number of lab results recorded", "category": "count", "responseTimeSec": 25, "retries": 0, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE COUNTROWS(lab_results)"},
+            {"question": "What are the distinct departments in patient encounters?", "category": "listing", "responseTimeSec": 31, "retries": 0, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE DISTINCT(patient_encounters[department])"},
+            {"question": "How many medications were prescribed in total?", "category": "count", "responseTimeSec": 27, "retries": 0, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE COUNTROWS(medications)"},
+            # MEDIUM (10): Joins, filters, grouping
+            {"question": "What is the average length of stay by department?", "category": "aggregation", "responseTimeSec": 38, "retries": 1, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE SUMMARIZECOLUMNS(patient_encounters[department], 'AvgLOS', AVERAGE(patient_encounters[length_of_stay]))"},
+            {"question": "Show me the top 10 most common medications prescribed", "category": "ranking", "responseTimeSec": 35, "retries": 0, "tablesUsed": "patient_encounters,medications,lab_results,vital_signs,billing_detail", "daxGenerated": "EVALUATE TOPN(10, SUMMARIZE(medications, medications[drug_name]))"},
+            {"question": "What is the readmission rate by department?", "category": "aggregation", "responseTimeSec": 42, "retries": 2, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE SUMMARIZE(FILTER(patient_encounters, patient_encounters[is_readmission_str]='True'), patient_encounters[department])"},
+            {"question": "Show billing totals grouped by payer type", "category": "aggregation", "responseTimeSec": 36, "retries": 1, "tablesUsed": "patient_encounters,billing_detail,lab_results,medications,vital_signs", "daxGenerated": "EVALUATE SUMMARIZECOLUMNS(billing_detail[payer_category], 'Total', SUM(billing_detail[amount]))"},
+            {"question": "What are the most common lab tests ordered?", "category": "ranking", "responseTimeSec": 33, "retries": 0, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE TOPN(10, SUMMARIZE(lab_results, lab_results[test_name]))"},
+            {"question": "How many vital sign readings were recorded per patient on average?", "category": "aggregation", "responseTimeSec": 40, "retries": 1, "tablesUsed": "patient_encounters,vital_signs,lab_results,medications,billing_detail", "daxGenerated": "EVALUATE AVERAGEX(VALUES(vital_signs[patient_id]), COUNTROWS(vital_signs))"},
+            {"question": "What is the average billing amount per encounter?", "category": "aggregation", "responseTimeSec": 34, "retries": 0, "tablesUsed": "patient_encounters,billing_detail,lab_results,medications,vital_signs", "daxGenerated": "EVALUATE AVERAGEX(VALUES(billing_detail[encounter_id]), SUM(billing_detail[amount]))"},
+            {"question": "Show me patient encounters with length of stay greater than 7 days", "category": "filtering", "responseTimeSec": 45, "retries": 2, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE FILTER(patient_encounters, patient_encounters[length_of_stay] > 7)"},
+            {"question": "What percentage of encounters had abnormal lab results?", "category": "aggregation", "responseTimeSec": 48, "retries": 2, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE DIVIDE(COUNTROWS(FILTER(lab_results, lab_results[abnormal_flag_str]='True')), COUNTROWS(lab_results))"},
+            {"question": "List the top 5 departments by total billing amount", "category": "ranking", "responseTimeSec": 37, "retries": 1, "tablesUsed": "patient_encounters,billing_detail,lab_results,medications,vital_signs", "daxGenerated": "EVALUATE TOPN(5, SUMMARIZE(billing_detail, billing_detail[department]))"},
+            # COMPLEX (10): Multi-table joins, calculations, time-based
+            {"question": "Compare ICU vs general ward average length of stay and readmission rates", "category": "comparison", "responseTimeSec": 52, "retries": 3, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE SUMMARIZE(patient_encounters, patient_encounters[department])"},
+            {"question": "What is the trend of average length of stay over the past 12 months?", "category": "trend", "responseTimeSec": 55, "retries": 2, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE SUMMARIZE(patient_encounters, patient_encounters[admission_date_str])"},
+            {"question": "Show me the correlation between number of medications and length of stay", "category": "correlation", "responseTimeSec": 58, "retries": 3, "tablesUsed": "patient_encounters,medications,lab_results,vital_signs,billing_detail", "daxGenerated": "EVALUATE ADDCOLUMNS(SUMMARIZE(medications, medications[encounter_id]))"},
+            {"question": "Which physicians have the highest average patient length of stay?", "category": "ranking", "responseTimeSec": 44, "retries": 1, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE TOPN(10, SUMMARIZE(patient_encounters, patient_encounters[attending_physician]))"},
+            {"question": "What is the average time between admission and first lab result by department?", "category": "calculation", "responseTimeSec": 62, "retries": 3, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE SUMMARIZE(patient_encounters, patient_encounters[department])"},
+            {"question": "Show me patients with more than 3 readmissions and their total billing", "category": "filtering", "responseTimeSec": 50, "retries": 2, "tablesUsed": "patient_encounters,billing_detail,lab_results,medications,vital_signs", "daxGenerated": "EVALUATE FILTER(SUMMARIZE(patient_encounters, patient_encounters[patient_id]))"},
+            {"question": "What are the top 10 most expensive encounters including all billing details?", "category": "ranking", "responseTimeSec": 47, "retries": 1, "tablesUsed": "patient_encounters,billing_detail,lab_results,medications,vital_signs", "daxGenerated": "EVALUATE TOPN(10, ADDCOLUMNS(SUMMARIZE(billing_detail, billing_detail[encounter_id])))"},
+            {"question": "Compare weekend vs weekday admission outcomes including mortality rate", "category": "comparison", "responseTimeSec": 56, "retries": 2, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE ADDCOLUMNS(patient_encounters, 'IsWeekend', IF(WEEKDAY(DATEVALUE(patient_encounters[admission_date_str]))))"},
+            {"question": "What is the distribution of vital signs for patients with LOS > 14 days?", "category": "distribution", "responseTimeSec": 65, "retries": 3, "tablesUsed": "patient_encounters,vital_signs,lab_results,medications,billing_detail", "daxGenerated": "EVALUATE FILTER(vital_signs, RELATED(patient_encounters[length_of_stay]) > 14)"},
+            {"question": "Show correlation between abnormal lab results and readmission rates by department", "category": "correlation", "responseTimeSec": 60, "retries": 3, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE SUMMARIZE(patient_encounters, patient_encounters[department])"},
+            # VERY COMPLEX (5): Cross-table analytics, statistical, governance-level
+            {"question": "Build a patient risk score combining LOS, readmissions, abnormal labs, and medication count", "category": "risk_scoring", "responseTimeSec": 78, "retries": 4, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE ADDCOLUMNS(patient_encounters, 'RiskScore', patient_encounters[length_of_stay] * 0.3)"},
+            {"question": "What is the cost per quality-adjusted day by department with outlier detection?", "category": "statistical", "responseTimeSec": 85, "retries": 4, "tablesUsed": "patient_encounters,billing_detail,lab_results,medications,vital_signs", "daxGenerated": "EVALUATE SUMMARIZE(patient_encounters, patient_encounters[department])"},
+            {"question": "Show me a complete patient journey analysis from admission to discharge with all interventions", "category": "journey", "responseTimeSec": 92, "retries": 5, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE patient_encounters"},
+            {"question": "Compare physician performance metrics across departments including LOS cost and readmission", "category": "benchmarking", "responseTimeSec": 88, "retries": 4, "tablesUsed": "patient_encounters,billing_detail,lab_results,medications,vital_signs", "daxGenerated": "EVALUATE SUMMARIZE(patient_encounters, patient_encounters[attending_physician])"},
+            {"question": "Generate a department-level dashboard with KPIs for LOS billing labs medications and vitals", "category": "dashboard", "responseTimeSec": 98, "retries": 5, "tablesUsed": "patient_encounters,lab_results,medications,vital_signs,billing_detail", "daxGenerated": "EVALUATE SUMMARIZE(patient_encounters, patient_encounters[department])"},
         ]
     traces_list = test_questions
 
@@ -1397,7 +1502,7 @@ for t in traces_list:
     db.execute('INSERT INTO traces VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         (trace_id, f'agent_{model_id[:8]}', model_id,
          t.get('question', ''), t.get('category', 'general'),
-         total_ms, 0, '', '', 'fail' if total_ms > 10000 else 'pass',
+         total_ms, t.get('retries', 0), t.get('daxGenerated', ''), t.get('tablesUsed', ''), 'fail' if total_ms > 10000 else 'pass',
          0, bd_parse, bd_schema, bd_nldax, bd_exec, bd_synth,
          'live', data.get('sessionId', '')))
 
@@ -1417,9 +1522,9 @@ db.row_factory = sqlite3.Row
 traces_out = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
 db.close()
 
-# Detect domain for result
+# Detect domain for result — explicit domain param takes priority
 detected_domain = data.get('domain', '')
-if not detected_domain:
+if not detected_domain or detected_domain.lower() in ('auto', ''):
     il = instructions.lower()
     if 'procurement' in il or 'vendor' in il or 'inventory' in il or 'supply' in il:
         detected_domain = 'SUPPLY_CHAIN'
@@ -1442,6 +1547,7 @@ print(json.dumps(result))
     sessionId, dbPath, workspaceId, agentId,
     agentName: agentName || 'LOS_Bad_Agent',
     agentInstructions: agentInstructions || '',
+    domain: req.body.domain || '',
     tables: tables || [],
     traces: traces || [],
   });

@@ -1,43 +1,60 @@
 // Available LLM models for agent pipeline
 // Each model can be selected per-agent or as the default for all agents
-// Note: gpt-5.4-pro does NOT support chat completions (reasoning model, uses responses API)
-// Note: grok-4-1-fast-reasoning removed per user request
+// GPT-5.4-pro uses the Responses API (reasoning model) — proxy handles routing automatically
+// grok removed per user request
 export const MODELS = [
+  {
+    id: 'gpt-5.4-pro',
+    name: 'GPT-5.4 Pro',
+    provider: 'Azure OpenAI',
+    description: 'Reasoning model — highest intelligence for complex analysis, uses Responses API',
+    authMethods: ['api-key'],
+    strengths: ['Deep reasoning', 'Complex analysis', 'Multi-step logic', 'Highest accuracy'],
+    recommended: ['domain_intelligence', 'synthesis', 'remediation', 'validation'],
+    default: true,
+  },
   {
     id: 'DeepSeek-V3.2-Speciale',
     name: 'DeepSeek V3.2 Speciale',
     provider: 'Azure AI (DeepSeek)',
-    description: 'Primary analysis model — fast 2-3s response time, excellent for all analysis tasks',
+    description: 'Fast analysis model — 2-3s response time, excellent for rule-heavy agents',
     authMethods: ['api-key'],
-    strengths: ['Deep analysis', 'Code understanding', 'Pattern matching', 'Fast inference'],
-    recommended: ['domain_intelligence', 'adversarial_probe', 'schema', 'dax', 'execution', 'synthesis', 'monte_carlo', 'remediation', 'validation'],
-    default: true,
+    strengths: ['Fast inference', 'Pattern matching', 'Code understanding', 'Reliable'],
+    recommended: ['adversarial_probe', 'schema', 'dax', 'execution', 'monte_carlo'],
   },
   {
     id: 'DeepSeek-V3.2',
     name: 'DeepSeek V3.2',
     provider: 'Azure AI (DeepSeek)',
-    description: 'Secondary analysis model — general-purpose backup for pipeline agents',
+    description: 'General-purpose backup model',
     authMethods: ['api-key'],
     strengths: ['General purpose', 'Fast inference', 'Reliable'],
     recommended: [],
   },
+  {
+    id: 'gpt-4o',
+    name: 'GPT-4o',
+    provider: 'Azure OpenAI',
+    description: 'Multimodal GPT model — fast, good for general tasks',
+    authMethods: ['api-key'],
+    strengths: ['Multimodal', 'Fast', 'General purpose'],
+    recommended: [],
+  },
 ];
 
-// Default model assignment per agent
-// Primary: DeepSeek V3.2 Speciale (fast, reliable, chat completions compatible)
-// Secondary: DeepSeek V3.2 (general-purpose backup)
-// Note: gpt-5.4-pro doesn't support chat completions; grok removed per user request
+// Default model assignment per agent — mixed GPT-5.4-pro + DeepSeek V3.2 Speciale
+// GPT-5.4-pro: LLM-heavy agents that benefit from deep reasoning (Domain, Synthesis, Remediation, Validation)
+// DeepSeek V3.2 Speciale: Rule-heavy agents that need fast inference (Adversarial, Schema, DAX, Execution, Monte Carlo)
 export const DEFAULT_AGENT_MODELS = {
-  domain_intelligence: 'DeepSeek-V3.2-Speciale',
+  domain_intelligence: 'gpt-5.4-pro',
   adversarial_probe: 'DeepSeek-V3.2-Speciale',
   schema: 'DeepSeek-V3.2-Speciale',
   dax: 'DeepSeek-V3.2-Speciale',
   execution: 'DeepSeek-V3.2-Speciale',
-  synthesis: 'DeepSeek-V3.2-Speciale',
+  synthesis: 'gpt-5.4-pro',
   monte_carlo: 'DeepSeek-V3.2-Speciale',
-  remediation: 'DeepSeek-V3.2-Speciale',
-  validation: 'DeepSeek-V3.2-Speciale',
+  remediation: 'gpt-5.4-pro',
+  validation: 'gpt-5.4-pro',
 };
 
 // Get model by ID

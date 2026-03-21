@@ -13,7 +13,7 @@
 #   bash setup.sh
 # ============================================================
 
-set -uo pipefail
+set -o pipefail
 
 # Colors for output (disabled if not a terminal)
 if [ -t 1 ]; then
@@ -28,7 +28,7 @@ print_ok()   { echo -e "  ${GREEN}OK${NC} $1"; }
 print_warn() { echo -e "  ${YELLOW}WARNING${NC} $1"; }
 print_err()  { echo -e "  ${RED}ERROR${NC} $1"; }
 
-TOTAL_STEPS=8
+TOTAL_STEPS=9
 ERRORS=0
 
 # ── Navigate to repo root (where this script lives) ──────────
@@ -48,8 +48,10 @@ print_step 1 "Checking Node.js..."
 
 if ! command -v node &>/dev/null; then
     print_err "Node.js not found"
-    echo -e "  Install from: ${BLUE}https://nodejs.org/${NC}"
+    echo -e "  Install from: ${BLUE}https://nodejs.org/${NC} (LTS recommended)"
     echo "  Or run: brew install node (macOS) / sudo apt install nodejs npm (Ubuntu)"
+    echo ""
+    echo "  After installing, close and reopen your terminal, then run this script again."
     exit 1
 fi
 
@@ -84,8 +86,10 @@ fi
 
 if [ -z "$PYTHON_CMD" ]; then
     print_err "Python 3 not found"
-    echo -e "  Install from: ${BLUE}https://python.org/${NC}"
+    echo -e "  Install from: ${BLUE}https://python.org/${NC} (3.10+ recommended)"
     echo "  Or run: brew install python3 (macOS) / sudo apt install python3 python3-pip (Ubuntu)"
+    echo ""
+    echo "  After installing, close and reopen your terminal, then run this script again."
     exit 1
 fi
 print_ok "$($PYTHON_CMD --version 2>&1)"
@@ -152,32 +156,47 @@ print_step 5 "Configuring environment..."
 
 if [ ! -f server/.env ]; then
     cat > server/.env << 'ENVFILE'
-# Azure OpenAI / Azure AI Configuration
-# Replace these with your real values to enable LLM-backed agents
+# ============================================================
+# Fabric Data Agent Analyzer — Environment Configuration
+# ============================================================
+# Replace LLM_ENDPOINT and LLM_API_KEY with your Azure AI values
+# to enable AI-powered analysis. Sample Dataset mode works without them.
+#
+# To get these values:
+#   1. Go to https://ai.azure.com → your project → Deployments
+#   2. Click on a deployed model → copy the Endpoint URL and Key
+# ============================================================
+
+# Azure AI endpoint and credentials
 LLM_ENDPOINT=https://your-resource.openai.azure.com/openai/v1
 LLM_API_KEY=placeholder-api-key
-LLM_MODEL=gpt-4o
+LLM_MODEL=DeepSeek-V3.2-Speciale
 
 # Per-model endpoints (optional — falls back to LLM_ENDPOINT)
-# LLM_ENDPOINT_GPT=https://your-resource.openai.azure.com/openai/v1
-# LLM_ENDPOINT_GROK=https://your-resource.openai.azure.com/openai/v1
+# Uncomment and set these if different models are on different endpoints
+# LLM_ENDPOINT_GPT54=https://your-resource.openai.azure.com/openai/v1
+# LLM_API_KEY_GPT54=your-gpt54-key
 # LLM_ENDPOINT_DEEPSEEK=https://your-resource.openai.azure.com/openai/v1
-# LLM_ENDPOINT_PHI=https://your-resource.openai.azure.com/openai/v1
+# LLM_API_KEY_DEEPSEEK=your-deepseek-key
 
-# Storage paths
+# Storage paths (defaults work fine — no need to change)
 CHROMADB_PATH=../chroma_db
 SQLITE_DIR=./data
 TMP_DIR=./tmp
 
-# Monte Carlo simulation
+# Pipeline settings
+SYNTHETIC_ROW_SCALE=0.025
+BATTERY_TIMEOUT_MS=30000
+CALIBRATION_FACTOR=3.2
 MONTE_CARLO_N=500
 
 # Server
 PORT=3001
 PYTHON_PATH=python3
 ENVFILE
-    print_ok "Created server/.env (edit with your Azure OpenAI credentials)"
-    print_warn "LLM agents need a real API key — Sample Dataset mode works without one"
+    print_ok "Created server/.env"
+    print_warn "Edit server/.env with your Azure AI endpoint and API key to enable AI agents"
+    echo -e "  ${YELLOW}Sample Dataset mode works without an API key — great for a quick demo${NC}"
 else
     print_ok "server/.env already exists"
 fi
@@ -203,8 +222,24 @@ else
     fi
 fi
 
-# ── Step 7: Build ChromaDB knowledge base ─────────────────
-print_step 7 "Building ChromaDB knowledge base (500 issue patterns)..."
+# ── Step 7: Verify Puppeteer / PDF export ──────────────────
+print_step 7 "Checking PDF export dependencies..."
+
+# Puppeteer needs Chromium — check if it can launch
+if command -v npx &>/dev/null; then
+    # Just verify the puppeteer package is available (installed in step 3)
+    if [ -d "server/node_modules/puppeteer" ] || [ -d "node_modules/puppeteer" ]; then
+        print_ok "Puppeteer installed (PDF export available)"
+    else
+        print_warn "Puppeteer not found — PDF export may not work"
+        echo -e "  Run: ${BLUE}cd server && npm install puppeteer${NC}"
+    fi
+else
+    print_warn "npx not found — PDF export may not work"
+fi
+
+# ── Step 8: Build ChromaDB knowledge base ─────────────────
+print_step 8 "Building ChromaDB knowledge base (500 issue patterns)..."
 
 if [ -d chroma_db ] && [ "$(ls -A chroma_db 2>/dev/null)" ]; then
     print_ok "ChromaDB already populated"
@@ -220,8 +255,8 @@ else
     fi
 fi
 
-# ── Step 8: Start the app ────────────────────────────────
-print_step 8 "Starting the app..."
+# ── Step 9: Start the app ────────────────────────────────
+print_step 9 "Starting the app..."
 
 echo ""
 echo -e "${GREEN}${BOLD}  Setup complete!${NC}"
@@ -232,12 +267,22 @@ echo -e "  Backend:  ${CYAN}http://localhost:3001${NC}"
 echo ""
 echo -e "  ${BOLD}Quick Start:${NC}"
 echo -e "  1. Open ${CYAN}http://localhost:5173${NC} in your browser"
-echo -e "  2. Click ${GREEN}\"Sample Dataset\"${NC} to load demo data (no Azure required)"
-echo -e "  3. Explore Traces, Findings, Simulation tabs"
-echo -e "  4. Export PDF from Artifacts tab"
+echo -e "  2. Click ${GREEN}\"Sample Dataset\"${NC} to load demo data (no Azure AI key required)"
+echo -e "  3. Click ${GREEN}\"Run Analysis\"${NC} on the Workflow tab"
+echo -e "  4. Explore Findings, Simulation, and Validation tabs"
+echo -e "  5. Export PDF from the Artifacts tab"
 echo ""
-echo -e "  ${BOLD}To connect to real Fabric:${NC}"
-echo -e "  See README.md -> \"Connecting to a Real Fabric Data Agent\""
+echo -e "  ${BOLD}To connect to a real Fabric Data Agent:${NC}"
+echo -e "  1. Edit ${CYAN}server/.env${NC} with your Azure AI endpoint and API key"
+echo -e "  2. Paste a Fabric token on the Connect tab"
+echo -e "  3. See README.md for full instructions"
+echo ""
+echo -e "  ${BOLD}9-Agent AI Pipeline:${NC}"
+echo -e "  Domain Intelligence → Adversarial Probe → Schema → DAX → Execution"
+echo -e "  → Synthesis → Monte Carlo (500 sims) → Remediation → Validation"
+echo ""
+echo -e "  ${BOLD}Supported Models:${NC} GPT-5.4 Pro, DeepSeek V3.2 Speciale, DeepSeek V3.2, GPT-4o"
+echo -e "  Each agent can use a different model — configure on the Workflow tab"
 echo ""
 echo -e "  Press ${YELLOW}Ctrl+C${NC} to stop the servers"
 echo ""

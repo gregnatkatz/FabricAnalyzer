@@ -1,21 +1,22 @@
 # Fabric Data Agent Latency Analyzer
 
-A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces via OAuth, analyzes Data Agents using a 9-agent AI pipeline, generates synthetic datasets, runs Monte Carlo simulations, validates recommendations, and exports PDFs with findings and fix artifacts.
+A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces via OAuth, analyzes Data Agents using a 9-agent AI pipeline powered by GPT-5.4 Pro and DeepSeek V3.2 Speciale, runs Monte Carlo simulations (500 iterations), validates recommendations, and exports PDF reports with findings and fix artifacts.
 
 ## Key Features
 
-- **Automated Latency Diagnostics** — 29 deterministic rules + 500 RAG-grounded issue patterns detect root causes
+- **Mixed Model AI Pipeline** — GPT-5.4 Pro (Responses API) for reasoning agents + DeepSeek V3.2 Speciale for analysis agents, with per-agent model selection
+- **Smart Retry Logic** — Escalating timeouts (180s/240s/300s) for GPT-5.4 Pro reasoning model, 3 pipeline-level retries before DeepSeek fallback
+- **29 Deterministic Rules + 500 RAG Patterns** — Schema, DAX, and execution analysis with ChromaDB knowledge base
 - **PDF Report Export** — Puppeteer-rendered PDF with executive summary, root cause ranking, before/after comparison, CU cost correlation, and fix recommendations
-- **ChromaDB Knowledge Base** — 538 embedded chunks (38 docs + 500 latency issues) for RAG-grounded LLM analysis
-- **Before/After Comparison** — Projected impact of all fixes with per-fix breakdown showing latency reduction percentages
+- **Monte Carlo Simulation** — 500-iteration client-side math model with instant fix toggle projections
 - **CU Cost Correlation** — AI CU, Query CU, Throttle Events, P50/P95 latency with estimated CU savings
-- **Adaptive Question Battery** — 30-50 domain-specific questions auto-generated from semantic model schema
+- **Live Fabric Integration** — Connect via OAuth or token paste, auto-detect Data Agents and semantic models
 - **20 Test Scenarios** — Pre-built scenarios across 8 domains (Revenue Cycle, Supply Chain, Clinical, Financial, etc.)
-- **Per-Agent Model Selection** — Choose from 4 Azure AI models per pipeline agent
+- **Adaptive Question Battery** — 30-50 domain-specific questions auto-generated from semantic model schema
 
 ## Video Walkthrough
 
-A full end-to-end walkthrough showing sample data loading, findings analysis, and PDF export:
+A full end-to-end walkthrough showing sample data loading, mixed model pipeline (GPT-5.4 Pro + DeepSeek), findings analysis, simulation, and PDF export:
 
 https://github.com/user-attachments/assets/walkthrough.mp4
 
@@ -24,7 +25,7 @@ https://github.com/user-attachments/assets/walkthrough.mp4
 ## Screenshots
 
 ### Connect Tab
-Connect to a Fabric workspace via OAuth or load the built-in sample dataset. Setup Checklist guides prerequisite configuration with "Test Connection" buttons.
+Connect to a Fabric workspace via OAuth or token paste, or load the built-in sample dataset. Supports 20 pre-built test scenarios across 8 healthcare domains.
 
 ![Connect Tab](docs/screenshots/01-connect-tab.png)
 
@@ -33,22 +34,22 @@ View all collected traces with latency breakdowns (Schema/DAX/Execution), retry 
 
 ![Traces Tab](docs/screenshots/02-traces-tab.png)
 
-### Workflow Tab — 9-Agent Pipeline with Model Selection
-Run the full 9-agent analysis pipeline with per-agent model selection. Choose from GPT-5.4 Pro, Grok 4.1 Fast Reasoning, DeepSeek V3.2 Speciale, or Phi-4 Reasoning for each agent.
+### Workflow Tab — 9-Agent Pipeline with Mixed Models
+Run the full 9-agent analysis pipeline with per-agent model selection. Choose from GPT-5.4 Pro, DeepSeek V3.2 Speciale, DeepSeek V3.2, or GPT-4o for each agent. GPT-5.4 Pro uses Azure's Responses API with smart retry logic (escalating timeouts 180s/240s/300s).
 
 ![Workflow Tab](docs/screenshots/03-workflow-tab.png)
 
 ### Findings Tab — Root Cause Ranking
-All issues ranked by latency impact (biggest offenders first). Each finding shows affected tables, detailed explanation, resolution steps, and severity. 15 findings across 6 CRITICAL, 7 HIGH, and 2 MEDIUM with 105.5s total impact.
+All issues ranked by latency impact (biggest offenders first). Each finding shows affected tables, detailed explanation, resolution steps, and severity.
 
 ![Findings Tab](docs/screenshots/04-findings-tab.png)
 
-### Simulation Tab — Math Model
-Pure client-side JavaScript math model updates instantly (<100ms) as you toggle fixes. Shows projected average latency, outlier latency, pass rate, and before/after comparison chart.
+### Simulation Tab — Monte Carlo Math Model
+Pure client-side JavaScript math model with 500 Monte Carlo iterations updates instantly (<100ms) as you toggle fixes. Shows projected average latency, outlier latency, pass rate, and before/after comparison chart.
 
 ![Simulation Tab - Baseline](docs/screenshots/05-simulation-tab.png)
 
-Toggle fixes to see instant impact projections — here "Trim Instructions" and "Add Verified Answers" reduce avg latency from 26.6s to 19.9s (-25%).
+Toggle fixes to see instant impact projections with before/after comparison.
 
 ![Simulation Tab - With Fixes](docs/screenshots/05b-simulation-with-fixes.png)
 
@@ -89,24 +90,40 @@ Select fixes to validate with a 4-phase validation pipeline: baseline battery, f
 
 | # | Agent | Model Default | Purpose |
 |---|-------|---------------|---------|
-| 1 | Domain Intelligence | Grok 4.1 Fast | Domain classification, probe question generation |
-| 2 | Adversarial Probe | Grok 4.1 Fast | Behavioral profiling from probe results |
-| 3 | Schema Agent | DeepSeek V3.2 | 11 deterministic rules + LLM schema analysis |
-| 4 | DAX Agent | DeepSeek V3.2 | 9 deterministic rules + LLM DAX pattern analysis |
-| 5 | Execution Agent | DeepSeek V3.2 | 9 deterministic rules + LLM execution analysis |
+| 1 | Domain Intelligence | GPT-5.4 Pro | Domain classification, probe question generation |
+| 2 | Adversarial Probe | DeepSeek V3.2 Speciale | Behavioral profiling from probe results |
+| 3 | Schema Agent | DeepSeek V3.2 Speciale | 11 deterministic rules + LLM schema analysis |
+| 4 | DAX Agent | DeepSeek V3.2 Speciale | 9 deterministic rules + LLM DAX pattern analysis |
+| 5 | Execution Agent | DeepSeek V3.2 Speciale | 9 deterministic rules + LLM execution analysis |
 | 6 | Synthesis Agent | GPT-5.4 Pro | Root cause ranking, demo readiness verdict |
-| 7 | Monte Carlo Agent | GPT-5.4 Pro | Calibrated distributions, P10/P50/P90 per fix |
+| 7 | Monte Carlo Agent | DeepSeek V3.2 Speciale | Calibrated distributions, P10/P50/P90 per fix |
 | 8 | Remediation Agent | GPT-5.4 Pro | Paste-ready artifacts for Prep for AI |
-| 9 | Validation Agent | Phi-4 Reasoning | On-demand fix validation with before/after |
+| 9 | Validation Agent | GPT-5.4 Pro | On-demand fix validation with before/after |
 
 ## Available Models
 
-| Model | Provider | Auth | Best For |
-|-------|----------|------|----------|
-| GPT-5.4 Pro | Azure OpenAI | API Key / Entra ID | Complex reasoning, synthesis, remediation |
-| Grok 4.1 Fast Reasoning | Azure AI (xAI) | Entra ID | Fast domain intelligence, adversarial probing |
-| DeepSeek V3.2 Speciale | Azure AI (DeepSeek) | API Key | Schema/DAX/execution deep analysis |
-| Phi-4 Reasoning | Azure AI (Microsoft) | API Key | Efficient validation, quick checks |
+| Model | Provider | API | Best For |
+|-------|----------|-----|----------|
+| GPT-5.4 Pro | Azure OpenAI | Responses API (reasoning) | Complex reasoning, synthesis, remediation — uses escalating retry timeouts (180/240/300s) |
+| DeepSeek V3.2 Speciale | Azure AI (DeepSeek) | Chat Completions | Schema/DAX/execution deep analysis — fast and reliable |
+| DeepSeek V3.2 | Azure AI (DeepSeek) | Chat Completions | General-purpose analysis |
+| GPT-4o | Azure OpenAI | Chat Completions | Balanced speed and quality |
+
+### GPT-5.4 Pro Retry Logic
+
+GPT-5.4 Pro uses Azure's Responses API (`/openai/responses`) with built-in retry handling:
+
+**Proxy level** (server/proxy.js): Each call gets 3 attempts with escalating timeouts:
+- Attempt 1: 180s timeout
+- Attempt 2: 240s timeout
+- Attempt 3: 300s timeout
+
+**Pipeline level** (agents/pipeline.py): Each agent retries the same model 3 times before falling back to DeepSeek V3.2 Speciale.
+
+**Technical details:**
+- Uses `max_output_tokens: 16384` to prevent reasoning-only output (tokens are shared between reasoning and message content)
+- Uses `reasoning.effort: 'medium'` (minimum supported by Azure GPT-5.4 Pro; `'low'` is not available)
+- Uses Node.js native `fetch` + `AbortController` instead of curl for proper long-running request handling
 
 ## Quick Start
 
@@ -122,13 +139,14 @@ chmod +x setup.sh
 ```
 
 `setup.sh` handles everything:
-1. Checks Node.js 18+ and Python 3 are installed
+1. Checks Node.js 18+ and Python 3.10+ are installed
 2. Installs npm dependencies (root, client, server)
 3. Installs Python packages (chromadb, numpy, requests)
-4. Creates `server/.env` with defaults
+4. Creates `server/.env` with defaults (DeepSeek V3.2 Speciale as default model)
 5. Verifies sample dataset exists
-6. Builds ChromaDB knowledge base (538 issue patterns)
-7. Starts Express backend (:3001) and React frontend (:5173)
+6. Checks PDF export dependencies (Puppeteer)
+7. Builds ChromaDB knowledge base (500 issue patterns)
+8. Starts Express backend (:3001) and React frontend (:5173)
 
 > **Windows?** Run `setup.bat` instead — same steps, same result.
 
@@ -161,14 +179,15 @@ npm run dev
 # Express proxy at http://localhost:3001
 ```
 
-### Sample Dataset Mode (No Azure Required)
+### Sample Dataset Mode (No Azure AI Key Required)
 1. Click **Sample Dataset** on the Connect tab
-2. View 10 traces on the Traces tab
-3. Select models per agent on the Workflow tab
+2. View 10 traces on the Traces tab with CU Correlation metrics
+3. Select models per agent on the Workflow tab (GPT-5.4 Pro, DeepSeek V3.2 Speciale, etc.)
 4. Click **Run Analysis** to run the 9-agent pipeline
-5. Toggle fixes on the Simulation tab to see instant impact projections
-6. Select fixes and click **Run Validation** on the Validation tab
-7. Export PDF from the Artifacts tab
+5. Review findings on the Findings tab (ranked by latency impact)
+6. Toggle fixes on the Simulation tab to see instant Monte Carlo projections
+7. Select fixes and click **Run Validation** on the Validation tab
+8. Export PDF from the Artifacts tab
 
 ### Connecting to a Real Fabric Data Agent (Step-by-Step)
 
@@ -383,14 +402,19 @@ Configure separate endpoints/keys for each Azure AI model. If not set, all model
 
 | Variable | Description |
 |----------|-------------|
-| `LLM_ENDPOINT_GPT` | Endpoint for GPT-5.4 Pro |
-| `LLM_API_KEY_GPT` | API key for GPT-5.4 Pro |
-| `LLM_ENDPOINT_GROK` | Endpoint for Grok 4.1 Fast Reasoning |
-| `LLM_API_KEY_GROK` | API key for Grok 4.1 Fast Reasoning |
+| `LLM_ENDPOINT_GPT54` | Endpoint for GPT-5.4 Pro |
+| `LLM_API_KEY_GPT54` | API key for GPT-5.4 Pro |
 | `LLM_ENDPOINT_DEEPSEEK` | Endpoint for DeepSeek V3.2 Speciale |
 | `LLM_API_KEY_DEEPSEEK` | API key for DeepSeek V3.2 Speciale |
-| `LLM_ENDPOINT_PHI` | Endpoint for Phi-4 Reasoning |
-| `LLM_API_KEY_PHI` | API key for Phi-4 Reasoning |
+| `LLM_ENDPOINT_GPT4O` | Endpoint for GPT-4o |
+| `LLM_API_KEY_GPT4O` | API key for GPT-4o |
+
+### Pipeline Settings
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SYNTHETIC_ROW_SCALE` | `0.025` | Scale factor for synthetic data generation |
+| `BATTERY_TIMEOUT_MS` | `30000` | Timeout for question battery queries (ms) |
+| `CALIBRATION_FACTOR` | `3.2` | Monte Carlo calibration factor |
 
 ## License
 
