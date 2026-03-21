@@ -13,6 +13,11 @@ A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces
 - **Live Fabric Integration** — Connect via OAuth or token paste, auto-detect Data Agents and semantic models
 - **20 Test Scenarios** — Pre-built scenarios across 8 domains (Revenue Cycle, Supply Chain, Clinical, Financial, etc.)
 - **Adaptive Question Battery** — 30-50 domain-specific questions auto-generated from semantic model schema
+- **XMLA Deep Analysis** — Automatic XMLA collection via Admin Scanner API for any connected workspace (supports Direct Lake models)
+- **Microsoft Learn Integration** — Cross-references findings with curated MS Learn best practices (12 articles, 70+ practices)
+- **Scheduled Analysis** — Configure recurring analysis runs (hourly/daily/weekly) with persistent schedule management
+- **Trending Dashboard** — Track analysis history over time with trend detection, severity breakdowns, and impact comparisons
+- **Auto-Save History** — Every pipeline run automatically saved to history for trending analysis and ROI tracking
 
 ## Video Walkthrough
 
@@ -61,29 +66,32 @@ Select fixes to validate with a 4-phase validation pipeline: baseline battery, f
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    React UI (:5173)                       │
-│  ConnectTab │ TracesTab │ WorkflowTab │ FindingsTab       │
-│  SimulationTab │ ValidationTab │ ArtifactsTab             │
-│  mathModel.js (pure sync JS, <100ms updates)             │
-└───────────────────────┬─────────────────────────────────┘
-                        │ fetch() to /api/*
-┌───────────────────────▼─────────────────────────────────┐
-│              Express Proxy (:3001)                        │
-│  /api/health │ /api/agent │ /api/models │ /api/sample     │
-│  /api/analyze │ /api/reset │ /api/validate (SSE)          │
-│  /api/pdf │ /api/fabric/*                                 │
-│  Azure AD + API Key auth │ Per-agent model routing        │
-└───────────────────────┬─────────────────────────────────┘
-                        │ subprocess spawn
-┌───────────────────────▼─────────────────────────────────┐
-│              Python Backend                               │
-│  agents/ — 9-agent pipeline (29 deterministic + 500 RAG)   │
+┌──────────────────────────────────────────────────────────────┐
+│                     React UI (:5173)                          │
+│  ConnectTab │ TracesTab │ WorkflowTab │ FindingsTab           │
+│  SimulationTab │ ValidationTab │ ArtifactsTab │ TrendingTab   │
+│  mathModel.js (pure sync JS, <100ms updates)                 │
+│  MS Learn enrichment │ Auto-save history │ Schedule mgmt      │
+└────────────────────────┬─────────────────────────────────────┘
+                         │ fetch() to /api/*
+┌────────────────────────▼─────────────────────────────────────┐
+│               Express Proxy (:3001)                           │
+│  /api/health │ /api/agent │ /api/models │ /api/sample         │
+│  /api/analyze │ /api/reset │ /api/validate (SSE)              │
+│  /api/pdf │ /api/fabric/* │ /api/fabric/xmla-collect          │
+│  /api/mslearn/* │ /api/schedules │ /api/history               │
+│  Azure AD + API Key auth │ Per-agent model routing            │
+└────────────────────────┬─────────────────────────────────────┘
+                         │ subprocess spawn
+┌────────────────────────▼─────────────────────────────────────┐
+│               Python Backend                                  │
+│  agents/ — 11-agent pipeline (29 deterministic + 500 RAG)     │
 │  knowledge/ — ChromaDB RAG (540 chunks: 40 docs + 500 issues) │
-│  synthetic/ — Monte Carlo, validation, query simulator     │
-│  collector/ — Fabric API collector, question battery       │
-│  sample_dataset/ — 25 known issues, acceptance tests       │
-└─────────────────────────────────────────────────────────┘
+│  knowledge/ — MS Learn integration (12 articles, 70+ practices)│
+│  collector/ — Fabric API + XMLA (Admin Scanner API)           │
+│  synthetic/ — Monte Carlo, validation, query simulator        │
+│  sample_dataset/ — 25 known issues, acceptance tests          │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## 9-Agent Pipeline

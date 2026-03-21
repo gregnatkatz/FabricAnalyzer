@@ -3,7 +3,7 @@ import cors from 'cors';
 import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { spawn, execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1662,6 +1662,233 @@ app.post('/api/fabric/xmla-collect', (req, res) => {
       res.status(500).json({ error: `Parse error: ${e.message}`, stderr });
     }
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Microsoft Learn Best Practices Integration
+// ═══════════════════════════════════════════════════════════════════
+
+// MS Learn articles endpoint — returns curated best practices
+app.get('/api/mslearn/articles', (req, res) => {
+  const py = spawn(PYTHON_PATH, ['-c', `
+import json, sys
+sys.path.insert(0, '${join(__dirname, '..').replace(/\\/g, '/')}')
+from knowledge.mslearn_integration import get_articles, get_best_practices_summary, get_cache_status
+articles = get_articles()
+summary = get_best_practices_summary()
+cache = get_cache_status()
+print(json.dumps({'articles': articles, 'summary': summary, 'cache': cache}))
+`], { cwd: join(__dirname, '..') });
+  let output = '';
+  py.stdout.on('data', d => output += d);
+  py.stderr.on('data', d => console.error('[mslearn]', d.toString()));
+  py.on('close', () => {
+    try { res.json(JSON.parse(output)); }
+    catch { res.json({ articles: [], summary: {}, cache: { status: 'error' } }); }
+  });
+});
+
+// MS Learn enrichment — enrich findings with MS Learn references
+app.post('/api/mslearn/enrich', (req, res) => {
+  const { findings } = req.body;
+  if (!findings || !Array.isArray(findings)) {
+    return res.status(400).json({ error: 'findings array required' });
+  }
+  const py = spawn(PYTHON_PATH, ['-c', `
+import json, sys
+sys.path.insert(0, '${join(__dirname, '..').replace(/\\/g, '/')}')
+from knowledge.mslearn_integration import enrich_findings_with_mslearn
+findings = json.loads(sys.stdin.read())
+enriched = enrich_findings_with_mslearn(findings)
+print(json.dumps(enriched))
+`], { cwd: join(__dirname, '..') });
+  py.stdin.write(JSON.stringify(findings));
+  py.stdin.end();
+  let output = '';
+  py.stdout.on('data', d => output += d);
+  py.stderr.on('data', d => console.error('[mslearn-enrich]', d.toString()));
+  py.on('close', () => {
+    try { res.json({ findings: JSON.parse(output) }); }
+    catch { res.json({ findings }); }
+  });
+});
+
+// MS Learn cache refresh
+app.post('/api/mslearn/refresh', (req, res) => {
+  const py = spawn(PYTHON_PATH, ['-c', `
+import json, sys
+sys.path.insert(0, '${join(__dirname, '..').replace(/\\/g, '/')}')
+from knowledge.mslearn_integration import update_cache, get_best_practices_summary
+cache = update_cache()
+summary = get_best_practices_summary()
+total = sum(d['total_practices'] for d in summary.values())
+print(json.dumps({**cache, 'total_practices': total}))
+`], { cwd: join(__dirname, '..') });
+  let output = '';
+  py.stdout.on('data', d => output += d);
+  py.on('close', () => {
+    try { res.json(JSON.parse(output)); }
+    catch { res.json({ status: 'refreshed', last_refresh: new Date().toISOString() }); }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Background / Async Scheduled Analysis
+// ═══════════════════════════════════════════════════════════════════
+
+const SCHEDULES_FILE = join(SQLITE_DIR, 'schedules.json');
+const HISTORY_FILE = join(SQLITE_DIR, 'analysis_history.json');
+
+function loadJson(filepath, fallback) {
+  try {
+    if (existsSync(filepath)) return JSON.parse(readFileSync(filepath, 'utf8'));
+  } catch { /* ignore parse errors */ }
+  return fallback;
+}
+function saveJson(filepath, data) {
+  writeFileSync(filepath, JSON.stringify(data, null, 2));
+}
+
+// Get all schedules
+app.get('/api/schedules', (req, res) => {
+  const schedules = loadJson(SCHEDULES_FILE, []);
+  res.json({ schedules });
+});
+
+// Create / update a schedule
+app.post('/api/schedules', (req, res) => {
+  const { workspaceId, modelId, agentName, frequency, enabled, token } = req.body;
+  if (!workspaceId || !modelId) {
+    return res.status(400).json({ error: 'workspaceId and modelId required' });
+  }
+  const schedules = loadJson(SCHEDULES_FILE, []);
+  const id = `sched_${Date.now()}`;
+  const schedule = {
+    id,
+    workspaceId,
+    modelId,
+    agentName: agentName || 'Data Agent',
+    frequency: frequency || 'daily',
+    enabled: enabled !== false,
+    createdAt: new Date().toISOString(),
+    lastRun: null,
+    nextRun: computeNextRun(frequency || 'daily'),
+    runCount: 0,
+    hasToken: !!token,
+  };
+  schedules.push(schedule);
+  saveJson(SCHEDULES_FILE, schedules);
+  console.log(`[scheduler] Created schedule ${id} for ${workspaceId}/${modelId} (${frequency})`);
+  res.json({ schedule });
+});
+
+// Delete a schedule
+app.delete('/api/schedules/:id', (req, res) => {
+  let schedules = loadJson(SCHEDULES_FILE, []);
+  schedules = schedules.filter(s => s.id !== req.params.id);
+  saveJson(SCHEDULES_FILE, schedules);
+  res.json({ ok: true });
+});
+
+// Toggle schedule enabled/disabled
+app.patch('/api/schedules/:id', (req, res) => {
+  const schedules = loadJson(SCHEDULES_FILE, []);
+  const sched = schedules.find(s => s.id === req.params.id);
+  if (!sched) return res.status(404).json({ error: 'Schedule not found' });
+  if (req.body.enabled !== undefined) sched.enabled = req.body.enabled;
+  if (req.body.frequency) {
+    sched.frequency = req.body.frequency;
+    sched.nextRun = computeNextRun(req.body.frequency);
+  }
+  saveJson(SCHEDULES_FILE, schedules);
+  res.json({ schedule: sched });
+});
+
+function computeNextRun(frequency) {
+  const now = new Date();
+  switch (frequency) {
+    case 'hourly': return new Date(now.getTime() + 3600000).toISOString();
+    case 'daily': return new Date(now.getTime() + 86400000).toISOString();
+    case 'weekly': return new Date(now.getTime() + 604800000).toISOString();
+    default: return new Date(now.getTime() + 86400000).toISOString();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Analysis History / Trending Dashboard
+// ═══════════════════════════════════════════════════════════════════
+
+// Save analysis run to history
+app.post('/api/history', (req, res) => {
+  const { workspaceId, modelId, agentName, findings, domain, traces, xmlaSummary } = req.body;
+  const history = loadJson(HISTORY_FILE, []);
+  const run = {
+    id: `run_${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    workspaceId: workspaceId || 'sample',
+    modelId: modelId || 'sample',
+    agentName: agentName || 'Data Agent',
+    domain: domain || 'unknown',
+    traceCount: traces?.length || 0,
+    findingCount: findings?.length || 0,
+    findings: (findings || []).map(f => ({
+      id: f.id, severity: f.severity, title: f.title, agent: f.agent,
+      impact_ms: f.impact_ms || f.latency_impact_ms || 0,
+    })),
+    severityCounts: {
+      critical: (findings || []).filter(f => f.severity === 'CRITICAL').length,
+      high: (findings || []).filter(f => f.severity === 'HIGH').length,
+      medium: (findings || []).filter(f => f.severity === 'MEDIUM').length,
+      low: (findings || []).filter(f => f.severity === 'LOW').length,
+    },
+    totalImpactMs: (findings || []).reduce((s, f) => s + (f.impact_ms || f.latency_impact_ms || 0), 0),
+    xmlaColumnCount: xmlaSummary?.column_stats_count || 0,
+    xmlaRelationshipCount: xmlaSummary?.relationship_stats_count || 0,
+  };
+  history.push(run);
+  // Keep last 100 runs
+  if (history.length > 100) history.splice(0, history.length - 100);
+  saveJson(HISTORY_FILE, history);
+  console.log(`[history] Saved run ${run.id}: ${run.findingCount} findings, ${run.totalImpactMs}ms impact`);
+  res.json({ run });
+});
+
+// Get analysis history
+app.get('/api/history', (req, res) => {
+  const history = loadJson(HISTORY_FILE, []);
+  const { workspaceId, limit } = req.query;
+  let filtered = history;
+  if (workspaceId) filtered = filtered.filter(h => h.workspaceId === workspaceId);
+  if (limit) filtered = filtered.slice(-parseInt(limit, 10));
+  // Compute trending summary
+  const trending = computeTrending(filtered);
+  res.json({ history: filtered, trending });
+});
+
+function computeTrending(runs) {
+  if (runs.length < 2) return { trend: 'insufficient_data', runs: runs.length };
+  const recent = runs.slice(-5);
+  const older = runs.slice(0, -5).length > 0 ? runs.slice(0, -5) : runs.slice(0, 1);
+  const avgRecentFindings = recent.reduce((s, r) => s + r.findingCount, 0) / recent.length;
+  const avgOlderFindings = older.reduce((s, r) => s + r.findingCount, 0) / older.length;
+  const avgRecentImpact = recent.reduce((s, r) => s + r.totalImpactMs, 0) / recent.length;
+  const avgOlderImpact = older.reduce((s, r) => s + r.totalImpactMs, 0) / older.length;
+  const findingsDelta = avgRecentFindings - avgOlderFindings;
+  const impactDelta = avgRecentImpact - avgOlderImpact;
+  return {
+    trend: findingsDelta < -1 ? 'improving' : findingsDelta > 1 ? 'degrading' : 'stable',
+    findingsTrend: { recent: Math.round(avgRecentFindings), older: Math.round(avgOlderFindings), delta: Math.round(findingsDelta) },
+    impactTrend: { recentMs: Math.round(avgRecentImpact), olderMs: Math.round(avgOlderImpact), deltaMs: Math.round(impactDelta) },
+    runs: runs.length,
+    latestRun: runs[runs.length - 1]?.timestamp,
+    oldestRun: runs[0]?.timestamp,
+  };
+}
+
+// Clear history
+app.delete('/api/history', (req, res) => {
+  saveJson(HISTORY_FILE, []);
+  res.json({ ok: true });
 });
 
 app.listen(PORT, () => {

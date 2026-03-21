@@ -100,6 +100,64 @@ export async function exportPdf(sessionData) {
   return res.blob();
 }
 
+// Microsoft Learn Best Practices
+export async function getMsLearnArticles() {
+  return request('/mslearn/articles');
+}
+
+export async function enrichFindingsWithMsLearn(findings) {
+  return request('/mslearn/enrich', {
+    method: 'POST',
+    body: JSON.stringify({ findings }),
+  });
+}
+
+export async function refreshMsLearnCache() {
+  return request('/mslearn/refresh', { method: 'POST' });
+}
+
+// Scheduled Analysis
+export async function getSchedules() {
+  return request('/schedules');
+}
+
+export async function createSchedule(schedule) {
+  return request('/schedules', {
+    method: 'POST',
+    body: JSON.stringify(schedule),
+  });
+}
+
+export async function deleteSchedule(id) {
+  return request(`/schedules/${id}`, { method: 'DELETE' });
+}
+
+export async function updateSchedule(id, updates) {
+  return request(`/schedules/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(updates),
+  });
+}
+
+// Analysis History / Trending
+export async function getHistory(workspaceId, limit) {
+  const params = new URLSearchParams();
+  if (workspaceId) params.set('workspaceId', workspaceId);
+  if (limit) params.set('limit', String(limit));
+  return request(`/history?${params}`);
+}
+
+export async function saveHistoryRun(runData) {
+  return request('/history', {
+    method: 'POST',
+    body: JSON.stringify(runData),
+  });
+}
+
+export async function clearHistory() {
+  return request('/history', { method: 'DELETE' });
+}
+
 // SSE stream for validation progress
 export function startValidation(sessionId, fixes, onProgress, onComplete, onError) {
   const params = new URLSearchParams({ sessionId, fixes: fixes.join(',') });

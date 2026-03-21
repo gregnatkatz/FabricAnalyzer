@@ -22,6 +22,19 @@ function StatusDot({ status, label, detail }) {
   );
 }
 
+function formatTimestamp(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 export default function StatusHeader({ session }) {
   const [statuses, setStatuses] = useState({
     backend: 'checking',
@@ -30,6 +43,7 @@ export default function StatusHeader({ session }) {
     fabric: 'disconnected',
   });
   const [details, setDetails] = useState({});
+  const [clockTick, setClockTick] = useState(0);
 
   const checkStatuses = useCallback(async () => {
     // Check backend health
@@ -81,6 +95,12 @@ export default function StatusHeader({ session }) {
     return () => clearInterval(interval);
   }, [checkStatuses]);
 
+  // Tick every 30s to keep relative timestamps fresh
+  useEffect(() => {
+    const tick = setInterval(() => setClockTick(c => c + 1), 30000);
+    return () => clearInterval(tick);
+  }, []);
+
   // Update Fabric status based on session
   useEffect(() => {
     if (session?.connected && !session?.sampleMode) {
@@ -108,6 +128,16 @@ export default function StatusHeader({ session }) {
       <StatusDot status={statuses.fabric} label="Fabric" detail={details.fabric} />
       {session?.xmlaComplete && (
         <StatusDot status="connected" label="XMLA" detail="XMLA deep analysis data collected" />
+      )}
+      {session?.lastUpdated && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 4,
+          borderLeft: '1px solid var(--border)', paddingLeft: 12, marginLeft: 4,
+        }} title={new Date(session.lastUpdated).toLocaleString()}>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+            Updated {formatTimestamp(session.lastUpdated)}
+          </span>
+        </div>
       )}
       {session?.cuMetrics && (() => {
         const cu = session.cuMetrics;
