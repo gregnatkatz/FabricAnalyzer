@@ -132,9 +132,9 @@ app.post('/api/agent', async (req, res) => {
       // System instructions go in 'instructions' field, not as a message
       // IMPORTANT: max_output_tokens is shared between reasoning AND message content.
       // With too-low a value, the model spends all tokens on reasoning and returns 0 message content.
-      // Use 8192 tokens — enough for reasoning + a full response while keeping latency reasonable.
+      // Use 8192 tokens — balances reasoning + response. If a prompt is too complex,
+      // the pipeline falls back to DeepSeek after 1 attempt (fast fallback).
       // Set reasoning.effort = 'medium' (minimum supported by gpt-5.4-pro; 'low' is not available).
-      // 4096 was too low (model spent all tokens on reasoning, 0 for content). 8192 balances speed vs completeness.
       const reasoningMaxTokens = Math.max(maxTokens, 8192);
       body = {
         model,
