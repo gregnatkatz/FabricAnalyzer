@@ -52,11 +52,12 @@ def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override
     if not REQUESTS_AVAILABLE:
         return None
 
-    # Reasoning models need somewhat higher max_tokens because reasoning consumes tokens
-    # But don't go too high or the model takes too long and times out
+    # Reasoning models: max_output_tokens is shared between reasoning AND message content.
+    # With too-low a value the model spends all tokens on reasoning and returns 0 content.
+    # Use 16384 so the proxy sends a large enough budget for both reasoning + response.
     effective_max_tokens = max_tokens
     if model_override and model_override in REASONING_MODELS:
-        effective_max_tokens = max(max_tokens, 3000)  # Moderate increase for reasoning
+        effective_max_tokens = max(max_tokens, 16384)
 
     # Build retry sequence: for reasoning models, retry the model itself (proxy does
     # escalating timeouts 60s/90s/120s per attempt), then fall back to DeepSeek.
@@ -79,9 +80,9 @@ def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override
                 payload['modelOverride'] = model
             label = f' (model: {model}, attempt {attempt+1}/{len(models_to_try)})' if model else ''
             print(f'[pipeline] LLM call{label}', file=sys.stderr)
-            # Reasoning models: proxy already retries with escalating timeouts (60/90/120s)
+            # Reasoning models: proxy retries with escalating timeouts (90/120/180s)
             # so use a generous pipeline-level timeout to let the proxy finish its retries
-            req_timeout = 135 if is_reasoning else 190
+            req_timeout = 200 if is_reasoning else 190
             resp = requests.post(
                 f'{proxy_url}/api/agent',
                 json=payload,

@@ -130,15 +130,23 @@ app.post('/api/agent', async (req, res) => {
       llmUrl = `${base}/openai/responses?api-version=2025-03-01-preview`;
       // Responses API uses 'input' array instead of 'messages', and 'max_output_tokens' instead of 'max_tokens'
       // System instructions go in 'instructions' field, not as a message
+      // IMPORTANT: max_output_tokens is shared between reasoning AND message content.
+      // With too-low a value, the model spends all tokens on reasoning and returns 0 message content.
+      // Use 16384 tokens to give the model room for both reasoning and a full response.
+      // Also set reasoning.effort = 'medium' to limit reasoning token consumption.
+      const reasoningMaxTokens = Math.max(maxTokens, 16384);
       body = {
         model,
         instructions: system,
         input: [
           { role: 'user', content: userMsg },
         ],
-        max_output_tokens: maxTokens,
+        max_output_tokens: reasoningMaxTokens,
+        reasoning: {
+          effort: 'medium',
+        },
       };
-      console.log('[LLM] Using Responses API for reasoning model:', model, 'maxTokens:', maxTokens);
+      console.log('[LLM] Using Responses API for reasoning model:', model, 'maxTokens:', reasoningMaxTokens, '(reasoning.effort: medium)');
     } else {
       // Standard Chat Completions API
       if (endpoint.includes('openai.azure.com')) {
@@ -173,7 +181,9 @@ app.post('/api/agent', async (req, res) => {
 
     try {
       // Retry logic: reasoning models get multiple attempts with escalating timeouts
-      const timeouts = useResponsesApi ? [60, 90, 120] : [180];
+      // With reasoning.effort='medium' and 16384 max_output_tokens, responses typically
+      // arrive in 60-120s. Escalate to 150s/180s for safety.
+      const timeouts = useResponsesApi ? [90, 120, 180] : [180];
       let lastError = null;
       let result = null;
 
