@@ -573,7 +573,7 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
               disabled={loading}
               style={{ flex: 1, justifyContent: 'center' }}
             >
-              {loading && showScenarios ? 'Loading...' : `Test Scenarios (21)`}
+              {loading && showScenarios ? 'Loading...' : `Test Scenarios (${scenarios.length || 25})`}
             </button>
           </div>
           <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
