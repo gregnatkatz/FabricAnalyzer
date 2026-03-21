@@ -228,5 +228,69 @@
       "cu_throttling",
       "deep_nesting"
     ]
+  },
+  {
+    "id": 22,
+    "name": "LOS Clinical Analysis",
+    "domain": "Clinical Inpatient",
+    "agent_name": "LOS_Bad_Agent",
+    "description": "Length of Stay analysis agent with instruction bloat (5200+ chars), excessive table exposure (18 tables), missing descriptions, and no verified answers.",
+    "question_count": 25,
+    "issues": [
+      "instruction_bloat",
+      "schema_sprawl",
+      "missing_descriptions",
+      "no_verified_answers",
+      "hidden_columns_exposed"
+    ],
+    "db_file": "scenario_22.db"
+  },
+  {
+    "id": 23,
+    "name": "Revenue Cycle Analytics",
+    "domain": "Revenue Cycle",
+    "agent_name": "Revenue_Cycle_Agent",
+    "description": "Revenue cycle agent with ambiguous measure names (Net Revenue vs Net Rev vs Revenue Net), no verified answers, high retry rates on financial queries.",
+    "question_count": 25,
+    "issues": [
+      "measure_ambiguity",
+      "no_verified_answers",
+      "high_retries",
+      "missing_descriptions",
+      "fuzzy_measure_names"
+    ],
+    "db_file": "scenario_23.db"
+  },
+  {
+    "id": 24,
+    "name": "Workforce Analytics",
+    "domain": "Workforce",
+    "agent_name": "Staffing_Analytics_Agent",
+    "description": "Workforce analytics agent generating deeply nested DAX with SUMX/AVERAGEX iterators, CROSSJOIN on large tables, missing TOPN limits, and excessive CALCULATE nesting.",
+    "question_count": 25,
+    "issues": [
+      "deep_nesting_dax",
+      "iterator_abuse",
+      "crossjoin_large_tables",
+      "missing_topn",
+      "excessive_calculate_nesting"
+    ],
+    "db_file": "scenario_24.db"
+  },
+  {
+    "id": 25,
+    "name": "Supply Chain & Pharmacy",
+    "domain": "Supply Chain",
+    "agent_name": "Supply_Chain_Agent",
+    "description": "Supply chain agent with division-by-zero errors in cost calculations, circular measure references, NL2DAX contamination from ambiguous entity names, and instruction contradictions.",
+    "question_count": 25,
+    "issues": [
+      "division_by_zero",
+      "circular_measure_refs",
+      "nl2dax_contamination",
+      "instruction_contradictions",
+      "ambiguous_entities"
+    ],
+    "db_file": "scenario_25.db"
   }
 ]

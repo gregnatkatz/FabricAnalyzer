@@ -231,17 +231,60 @@ def load_db_context(db_path):
     }
 
 
+def compress_findings_for_reasoning(findings, max_items=10):
+    """Compress findings list for reasoning models to reduce prompt size.
+    Reasoning models (GPT-5.4 Pro) share max_output_tokens between reasoning
+    and message content. Smaller prompts = less reasoning overhead = more content tokens."""
+    if not findings or len(findings) <= max_items:
+        return findings
+    # Sort by impact and take top N, keeping only essential fields
+    sorted_f = sorted(findings, key=lambda f: f.get('impact_ms', 0), reverse=True)
+    compressed = []
+    for f in sorted_f[:max_items]:
+        compressed.append({
+            'issue': f.get('issue', '')[:120],
+            'severity': f.get('severity', 'MEDIUM'),
+            'impact_ms': f.get('impact_ms', 0),
+            'agent_id': f.get('agent_id', ''),
+            'fix': f.get('fix', '')[:80],
+        })
+    return compressed
+
+
 def run_agent_with_llm(agent_id, prompt_key, template_vars, proxy_url, chromadb_path, session_id, model_override=None):
     """Run an LLM-backed agent: query ChromaDB, format prompt, call LLM, parse JSON.
-    model_override: if set, routes this agent's LLM call to a specific model (e.g. gpt-5.4-pro)."""
-    # Query ChromaDB for grounding
-    query = AGENT_CHROMA_QUERIES.get(agent_id, '')
-    grounding = query_chromadb(chromadb_path, 'microsoft_docs', query, n_results=5)
-    template_vars['grounding_context'] = '\n'.join(grounding) if grounding else '(No grounding context available)'
+    model_override: if set, routes this agent's LLM call to a specific model (e.g. gpt-5.4-pro).
+    For reasoning models, compresses inputs to reduce prompt size and avoid
+    the model spending all output tokens on reasoning with 0 content."""
+    is_reasoning = model_override and model_override in REASONING_MODELS
 
-    # Past findings
-    past = query_chromadb(chromadb_path, 'past_findings', query, n_results=3)
-    template_vars['past_findings'] = '\n'.join(past) if past else '(No past findings)'
+    # Query ChromaDB for grounding — limit for reasoning models
+    query = AGENT_CHROMA_QUERIES.get(agent_id, '')
+    n_grounding = 2 if is_reasoning else 5  # Less grounding = shorter prompt
+    grounding = query_chromadb(chromadb_path, 'microsoft_docs', query, n_results=n_grounding)
+    if is_reasoning:
+        # Truncate each grounding doc to 300 chars for reasoning models
+        grounding = [g[:300] for g in grounding] if grounding else []
+    template_vars['grounding_context'] = '\n'.join(grounding) if grounding else '(none)'
+
+    # Past findings — skip for reasoning models to save tokens
+    if is_reasoning:
+        template_vars['past_findings'] = '(none)'
+    else:
+        past = query_chromadb(chromadb_path, 'past_findings', query, n_results=3)
+        template_vars['past_findings'] = '\n'.join(past) if past else '(No past findings)'
+
+    # For reasoning models, compress large JSON fields in template_vars
+    if is_reasoning:
+        for key in ('all_findings', 'ranked_findings'):
+            if key in template_vars:
+                try:
+                    findings_data = json.loads(template_vars[key]) if isinstance(template_vars[key], str) else template_vars[key]
+                    compressed = compress_findings_for_reasoning(findings_data, max_items=8)
+                    template_vars[key] = json.dumps(compressed)
+                    print(f'[pipeline] Compressed {key} from {len(findings_data)} to {len(compressed)} items for reasoning model', file=sys.stderr)
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
     # Format prompt
     prompt_template = PROMPTS.get(prompt_key, '')
@@ -249,6 +292,9 @@ def run_agent_with_llm(agent_id, prompt_key, template_vars, proxy_url, chromadb_
         system_prompt = prompt_template.format(**template_vars)
     except KeyError as e:
         system_prompt = prompt_template  # Use as-is if missing keys
+
+    prompt_len = len(system_prompt)
+    print(f'[pipeline] Prompt size for {agent_id}: {prompt_len} chars{" (compressed for reasoning)" if is_reasoning else ""}', file=sys.stderr)
 
     # Call LLM with per-agent model override
     user_msg = f'Analyze and respond with valid JSON only. Agent: {agent_id}'
