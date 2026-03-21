@@ -34,17 +34,19 @@ def api_get(url, token, timeout=30):
 
 
 def collect_cu_metrics(workspace_id, capacity_id, token):
-    """Collect Capacity Unit (CU) consumption metrics from Fabric APIs.
+    """Collect Capacity Unit (CU) consumption metrics from real Fabric APIs.
 
-    Uses the Fabric Capacities API to pull CU usage data for the workspace's capacity.
-    Falls back to workspace-level usage if capacity-level API is unavailable.
+    Uses the Fabric Capacities REST API for actual CU consumption data:
+      - GET /v1/capacities/{capacityId}/workloads → consumedCUs per workload
+      - GET /v1/capacities/{capacityId} → state (Active/Throttled/Suspended)
 
     Returns:
-        dict with ai_cu, query_cu, throttle_events, p50_latency, p95_latency
+        dict with ai_cu_consumed, query_cu_consumed, throttle_state,
+              capacity_state, capacity_sku
     """
     cu_data = {
-        'ai_cu': 0, 'query_cu': 0, 'throttle_events': 0,
-        'p50_latency': 0, 'p95_latency': 0,
+        'ai_cu_consumed': 0, 'query_cu_consumed': 0, 'throttle_state': 0,
+        'capacity_state': 'Unknown', 'capacity_sku': '',
     }
 
     if not capacity_id:
@@ -58,51 +60,41 @@ def collect_cu_metrics(workspace_id, capacity_id, token):
     if not capacity_id:
         return cu_data
 
-    # Attempt 1: Fabric Admin API — capacity workloads
-    # GET /admin/capacities/{capacityId} — requires admin scope
+    # Real API 1: Fabric Capacity Workloads — actual CU consumption
+    # GET https://api.fabric.microsoft.com/v1/capacities/{capacityId}/workloads
     try:
-        cap_info = api_get(
-            f'{PBI_BASE}/admin/capacities/{capacity_id}',
+        resp = api_get(
+            f'{FABRIC_BASE}/capacities/{capacity_id}/workloads',
             token, timeout=15,
         )
-        # Extract CU allocation from workloads
-        for wl in cap_info.get('workloads', []):
-            if wl.get('name') == 'AI':
-                cu_data['ai_cu'] = wl.get('maxMemoryPercentageSetByUser', 0)
-            elif wl.get('name') in ('DQ', 'Dataflow', 'Dataset'):
-                cu_data['query_cu'] += wl.get('maxMemoryPercentageSetByUser', 0)
+        for wl in resp.get('value', []):
+            wl_name = wl.get('name', '')
+            consumed = wl.get('consumedCUs', 0) or 0
+            if wl_name == 'AI':
+                cu_data['ai_cu_consumed'] = consumed
+            elif wl_name in ('Dataflows', 'Dataset', 'SQL'):
+                cu_data['query_cu_consumed'] += consumed
     except Exception as e:
-        print(f'CU: Admin capacity API not available: {e}', file=sys.stderr)
+        print(f'CU: Capacity workloads API not available: {e}', file=sys.stderr)
 
-    # Attempt 2: Fabric Monitoring API — recent CU consumption
-    # Uses the workspace monitoring endpoint for actual usage
+    # Real API 2: Capacity state — Active / Throttled / Suspended
+    # GET https://api.fabric.microsoft.com/v1/capacities/{capacityId}
     try:
-        # Query refreshables for recent refresh history (includes CU-like metrics)
-        refreshables = api_get(
-            f'{PBI_BASE}/groups/{workspace_id}/datasets',
+        cap = api_get(
+            f'{FABRIC_BASE}/capacities/{capacity_id}',
             token, timeout=15,
         )
-        for ds in refreshables.get('value', []):
-            # Aggregate query scale hints from dataset properties
-            if ds.get('isRefreshable'):
-                cu_data['query_cu'] += 1
-            if ds.get('queryScaleOutSettings', {}).get('autoSyncReadOnlyReplicas'):
-                cu_data['ai_cu'] += 100
+        state = cap.get('state', 'Active')
+        cu_data['capacity_state'] = state
+        cu_data['capacity_sku'] = cap.get('sku', '')
+        if state == 'Suspended':
+            cu_data['throttle_state'] = 999  # Critical — capacity suspended
+        elif state == 'Throttled':
+            cu_data['throttle_state'] = 99   # Capacity currently throttled
+        else:
+            cu_data['throttle_state'] = 0    # Active / healthy
     except Exception as e:
-        print(f'CU: Workspace datasets query failed: {e}', file=sys.stderr)
-
-    # Attempt 3: Fabric Items API — workspace-level CU usage
-    try:
-        items = api_get(
-            f'{FABRIC_BASE}/workspaces/{workspace_id}/items',
-            token, timeout=15,
-        )
-        item_count = len(items.get('value', []))
-        # Estimate CU from item density (heuristic)
-        if item_count > 50:
-            cu_data['throttle_events'] = max(cu_data['throttle_events'], item_count // 10)
-    except Exception as e:
-        print(f'CU: Fabric items API not available: {e}', file=sys.stderr)
+        print(f'CU: Capacity state API not available: {e}', file=sys.stderr)
 
     return cu_data
 
@@ -178,26 +170,28 @@ def collect(workspace_id, model_id, token, output_dir='./data', tmp_dir='./tmp')
     except Exception as e:
         print(f'Warning: Could not fetch agent config: {e}', file=sys.stderr)
 
-    # Collect CU metrics from Fabric Capacity APIs
+    # Collect CU metrics from real Fabric Capacity APIs
     capacity_id = dataset.get('capacityId', '')
     cu_metrics = collect_cu_metrics(workspace_id, capacity_id, token)
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS cu_metrics (
-            capacity_id TEXT, ai_cu INTEGER, query_cu INTEGER,
-            throttle_events INTEGER, p50_latency REAL, p95_latency REAL,
-            collected_at TEXT DEFAULT (datetime('now'))
-        )
-    ''')
-    db.execute('INSERT INTO cu_metrics VALUES (?, ?, ?, ?, ?, ?, datetime("now"))', (
-        capacity_id or 'unknown',
-        cu_metrics.get('ai_cu', 0),
-        cu_metrics.get('query_cu', 0),
-        cu_metrics.get('throttle_events', 0),
-        cu_metrics.get('p50_latency', 0),
-        cu_metrics.get('p95_latency', 0),
+
+    # Compute P50/P95 from collected trace data (more accurate than API)
+    trace_rows = [dict(r) for r in db.execute('SELECT total_ms FROM traces ORDER BY total_ms').fetchall()]
+    latencies = sorted([r['total_ms'] for r in trace_rows]) if trace_rows else []
+    p50_ms = latencies[len(latencies) // 2] if latencies else 0
+    p95_ms = latencies[int(len(latencies) * 0.95)] if latencies else 0
+
+    db.execute('INSERT INTO cu_metrics VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (
+        f'cu_{capacity_id or "unknown"}',
+        model_id, workspace_id,
+        cu_metrics.get('ai_cu_consumed', 0),
+        cu_metrics.get('query_cu_consumed', 0),
+        cu_metrics.get('throttle_state', 0),
+        p50_ms, p95_ms,
+        datetime.utcnow().isoformat(),
     ))
-    print(f'CU metrics collected: AI={cu_metrics["ai_cu"]}, Query={cu_metrics["query_cu"]}, '
-          f'Throttle={cu_metrics["throttle_events"]}', file=sys.stderr)
+    print(f'CU metrics collected: AI CU={cu_metrics["ai_cu_consumed"]}, '
+          f'Query CU={cu_metrics["query_cu_consumed"]}, '
+          f'State={cu_metrics["capacity_state"]}', file=sys.stderr)
 
     db.commit()
 

@@ -294,17 +294,17 @@ export default function ReportView({ session: propSession }) {
             </thead>
             <tbody>
               <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
-                <td style={{ padding: '8px 12px' }}>AI CU (28-day)</td>
-                <td style={{ padding: '8px 12px', fontWeight: 600 }}>{(cuMetrics.ai_cu_28d || 0).toLocaleString()}</td>
+                <td style={{ padding: '8px 12px' }}>AI CU Consumed</td>
+                <td style={{ padding: '8px 12px', fontWeight: 600 }}>{(cuMetrics.ai_cu_consumed || cuMetrics.ai_cu_28d || 0).toLocaleString()}</td>
               </tr>
               <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
-                <td style={{ padding: '8px 12px' }}>Query CU (28-day)</td>
-                <td style={{ padding: '8px 12px', fontWeight: 600 }}>{(cuMetrics.query_cu_28d || 0).toLocaleString()}</td>
+                <td style={{ padding: '8px 12px' }}>Query CU Consumed</td>
+                <td style={{ padding: '8px 12px', fontWeight: 600 }}>{(cuMetrics.query_cu_consumed || cuMetrics.query_cu_28d || 0).toLocaleString()}</td>
               </tr>
               <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
-                <td style={{ padding: '8px 12px' }}>Throttle Events</td>
-                <td style={{ padding: '8px 12px', fontWeight: 600, color: (cuMetrics.throttle_events || 0) > 0 ? '#d32f2f' : '#2e7d32' }}>
-                  {cuMetrics.throttle_events || 0}
+                <td style={{ padding: '8px 12px' }}>Capacity State</td>
+                <td style={{ padding: '8px 12px', fontWeight: 600, color: (cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0) >= 99 ? '#d32f2f' : '#2e7d32' }}>
+                  {(cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0) >= 999 ? 'Suspended' : (cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0) >= 99 ? 'Throttled' : 'Active'}
                 </td>
               </tr>
               <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
@@ -318,8 +318,8 @@ export default function ReportView({ session: propSession }) {
           {reductionPct > 0 && (
             <div style={{ marginTop: 12, padding: '10px 14px', background: '#e8f5e9', borderRadius: 6, border: '1px solid #c8e6c9' }}>
               <p style={{ fontSize: 13, color: '#2e7d32', margin: 0 }}>
-                Estimated CU Reduction: ~{Math.round((cuMetrics.ai_cu_28d || 0) * reductionPct / 100).toLocaleString()} AI CU/28d saved
-                {cuMetrics.throttle_events > 0 && ` | Latency reduction of ${reductionPct}% may reduce throttling events from ${cuMetrics.throttle_events} toward zero.`}
+                Estimated CU Reduction: ~{Math.round((cuMetrics.ai_cu_consumed || cuMetrics.ai_cu_28d || 0) * reductionPct / 100).toLocaleString()} AI CUs saved
+                {(cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0) >= 99 && ` | Latency reduction of ${reductionPct}% may help resolve capacity throttling.`}
               </p>
             </div>
           )}

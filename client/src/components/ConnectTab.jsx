@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { loginPopup, logout, getAccessToken, setClientConfig, getClientConfig, setManualToken } from '../auth/msalConfig';
-import { loadSampleDataset, getWorkspaces, getModels, collectData, collectDataDirect, getScenarios, loadScenario, healthCheck } from '../api/proxy';
+import { loadSampleDataset, getWorkspaces, getModels, collectData, collectDataDirect, collectXmla, getScenarios, loadScenario, healthCheck } from '../api/proxy';
 
 // Comprehensive setup checklist for Fabric Data Agent testing
 const SETUP_STEPS = [
@@ -127,6 +127,10 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [directAgentName, setDirectAgentName] = useState('');
   const [directInstructions, setDirectInstructions] = useState('');
   const [showDirectEntry, setShowDirectEntry] = useState(false);
+  const [xmlaEnabled, setXmlaEnabled] = useState(false);
+  const [xmlaStatus, setXmlaStatus] = useState(''); // '', 'collecting', 'complete', 'error'
+  const [xmlaError, setXmlaError] = useState('');
+  const [xmlaSummary, setXmlaSummary] = useState(null);
 
   const toggleStep = (stepId) => {
     setCheckedSteps(prev => ({ ...prev, [stepId]: !prev[stepId] }));
@@ -943,6 +947,92 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
             <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
               Find IDs in the Fabric URL: /groups/&lt;workspace-id&gt;/aiskills/&lt;agent-id&gt;
             </p>
+
+            {/* XMLA Deep Analysis Section */}
+            <div style={{
+              marginTop: 16,
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              padding: 16,
+              background: 'rgba(0,0,0,0.1)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 16 }}>{String.fromCodePoint(0x1F3D7, 0xFE0F)}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>Deep Analysis (XMLA)</span>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={xmlaEnabled}
+                    onChange={e => setXmlaEnabled(e.target.checked)}
+                    style={{ accentColor: 'var(--teal)' }}
+                  />
+                  Enable
+                </label>
+              </div>
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+                Requires XMLA endpoint access (Step 8 in checklist). Collects column cardinality, relationship statistics, and measure dependencies via DMV queries for 6 additional analysis rules.
+              </p>
+              {xmlaEnabled && (
+                <>
+                  <button
+                    onClick={async () => {
+                      if (!session.dbPath || !session.workspaceId) {
+                        setXmlaError('Run Analyze Data Agent first to create a session');
+                        return;
+                      }
+                      try {
+                        setXmlaStatus('collecting');
+                        setXmlaError('');
+                        const token = await getAccessToken().catch(() => manualTokenInput.trim());
+                        const result = await collectXmla(
+                          session.workspaceId,
+                          session.modelId || directAgentId.trim(),
+                          token,
+                          session.dbPath,
+                        );
+                        setXmlaSummary(result.summary || {});
+                        setXmlaStatus('complete');
+                        updateSession({ xmlaComplete: true });
+                      } catch (err) {
+                        setXmlaError(err.message);
+                        setXmlaStatus('error');
+                      }
+                    }}
+                    disabled={xmlaStatus === 'collecting' || !session.collectionComplete}
+                    style={{
+                      width: '100%',
+                      padding: '8px 16px',
+                      borderRadius: 6,
+                      border: '1px solid var(--border)',
+                      background: xmlaStatus === 'complete' ? 'rgba(34,197,94,0.15)'
+                        : xmlaStatus === 'collecting' ? 'rgba(0,188,212,0.15)'
+                        : 'var(--teal)',
+                      color: xmlaStatus === 'complete' ? 'var(--green)'
+                        : xmlaStatus === 'collecting' ? 'var(--teal)'
+                        : '#000',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: xmlaStatus === 'collecting' || !session.collectionComplete ? 'not-allowed' : 'pointer',
+                      opacity: session.collectionComplete ? 1 : 0.5,
+                    }}
+                  >
+                    {xmlaStatus === 'collecting' ? 'Collecting XMLA data...'
+                      : xmlaStatus === 'complete' ? `XMLA Complete (${xmlaSummary?.column_stats_count || 0} columns, ${xmlaSummary?.relationship_stats_count || 0} relationships)`
+                      : 'Run XMLA Collection'}
+                  </button>
+                  {!session.collectionComplete && (
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                      Run "Analyze Data Agent" first, then collect XMLA data.
+                    </p>
+                  )}
+                  {xmlaError && (
+                    <p style={{ fontSize: 11, color: 'var(--red)', marginTop: 6 }}>{xmlaError}</p>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         )}
 

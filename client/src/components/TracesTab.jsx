@@ -55,6 +55,12 @@ export default function TracesTab({ session }) {
   const avgSchema = traces.length > 0 ? traces.reduce((s, t) => s + (t.bd_schema || 0), 0) / traces.length : 0;
   const avgDax = traces.length > 0 ? traces.reduce((s, t) => s + (t.bd_nldax || 0), 0) / traces.length : 0;
   const avgExec = traces.length > 0 ? traces.reduce((s, t) => s + (t.bd_exec || 0), 0) / traces.length : 0;
+  const avgOther = traces.length > 0 ? traces.reduce((s, t) => {
+    const other = t.bd_other != null ? t.bd_other : Math.max(0, (t.total_ms || 0) - (t.bd_parse || 0) - (t.bd_schema || 0) - (t.bd_nldax || 0) - (t.bd_exec || 0) - (t.bd_synth || 0));
+    return s + other;
+  }, 0) / traces.length : 0;
+  const overheadPct = avgLatency > 0 ? ((avgOther / avgLatency) * 100).toFixed(0) : 0;
+  // Dominant phase excludes bd_other — platform overhead is never reported as "the dominant phase"
   const dominantPhase = avgSchema >= avgDax && avgSchema >= avgExec ? 'Schema Resolution' : avgDax >= avgExec ? 'DAX Generation' : 'Execution';
 
   return (
@@ -79,7 +85,9 @@ export default function TracesTab({ session }) {
           <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 0 }}>
             <strong>Latency phases:</strong> The dominant phase is <strong>{dominantPhase}</strong> (avg {(Math.max(avgSchema, avgDax, avgExec) / 1000).toFixed(1)}s).
             Schema Resolution averages {(avgSchema / 1000).toFixed(1)}s, DAX Generation averages {(avgDax / 1000).toFixed(1)}s,
-            and Execution averages {(avgExec / 1000).toFixed(1)}s per query. These breakdowns inform which fixes will have the highest impact.
+            and Execution averages {(avgExec / 1000).toFixed(1)}s per query.
+            {avgOther > 0 && <> <span style={{ color: 'var(--text-muted)' }}>{overheadPct}% ({(avgOther / 1000).toFixed(1)}s avg) is platform/network overhead (not reducible by configuration fixes).</span></>}
+            {' '}These breakdowns inform which fixes will have the highest impact.
           </p>
         </div>
       )}
@@ -108,22 +116,28 @@ export default function TracesTab({ session }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cyan)', fontFamily: 'var(--font-mono)' }}>
-                {cuMetrics.ai_cu_28d != null ? cuMetrics.ai_cu_28d.toLocaleString() : '—'}
+                {(cuMetrics.ai_cu_consumed ?? cuMetrics.ai_cu_28d) != null ? (cuMetrics.ai_cu_consumed ?? cuMetrics.ai_cu_28d ?? 0).toLocaleString() : '—'}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>AI CU (28d)</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>AI CU Consumed</div>
             </div>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--blue)', fontFamily: 'var(--font-mono)' }}>
-                {cuMetrics.query_cu_28d != null ? cuMetrics.query_cu_28d.toLocaleString() : '—'}
+                {(cuMetrics.query_cu_consumed ?? cuMetrics.query_cu_28d) != null ? (cuMetrics.query_cu_consumed ?? cuMetrics.query_cu_28d ?? 0).toLocaleString() : '—'}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Query CU (28d)</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Query CU Consumed</div>
             </div>
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-mono)',
-                color: (cuMetrics.throttle_events || 0) > 50 ? 'var(--red)' : (cuMetrics.throttle_events || 0) > 10 ? 'var(--amber)' : 'var(--green)' }}>
-                {cuMetrics.throttle_events != null ? cuMetrics.throttle_events : '—'}
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Throttle Events</div>
+              {(() => {
+                const ts = cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0;
+                const label = ts >= 999 ? 'Suspended' : ts >= 99 ? 'Throttled' : 'Active';
+                const color = ts >= 99 ? 'var(--red)' : ts > 0 ? 'var(--amber)' : 'var(--green)';
+                return (
+                  <>
+                    <div style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--font-mono)', color }}>{label}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Capacity State</div>
+                  </>
+                );
+              })()}
             </div>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--font-mono)' }}>
@@ -135,18 +149,19 @@ export default function TracesTab({ session }) {
             </div>
           </div>
           {/* CU-Latency correlation indicator */}
-          {cuMetrics.throttle_events > 0 && avgLatency > 15000 && (
+          {(cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0) >= 99 && (
             <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(239,68,68,0.08)', borderRadius: 6, border: '1px solid rgba(239,68,68,0.2)' }}>
               <span style={{ fontSize: 12, color: 'var(--red)' }}>
-                High CU throttling ({cuMetrics.throttle_events} events) is correlating with elevated latency ({(avgLatency / 1000).toFixed(1)}s avg).
-                Consider increasing capacity or optimizing high-CU queries.
+                Capacity is {(cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0) >= 999 ? 'SUSPENDED — all queries blocked' : 'THROTTLED — queries are being delayed'}.
+                {avgLatency > 15000 && ` Correlating with elevated latency (${(avgLatency / 1000).toFixed(1)}s avg).`}
+                {' '}Consider increasing capacity or optimizing high-CU queries.
               </span>
             </div>
           )}
-          {cuMetrics.throttle_events === 0 && avgLatency > 20000 && (
+          {(cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0) === 0 && avgLatency > 20000 && (
             <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(245,158,11,0.08)', borderRadius: 6, border: '1px solid rgba(245,158,11,0.2)' }}>
               <span style={{ fontSize: 12, color: 'var(--amber)' }}>
-                No CU throttling detected — latency is driven by agent configuration (schema scope, instructions, routing) not capacity.
+                Capacity is Active (not throttled) — latency is driven by agent configuration (schema scope, instructions, routing) not capacity.
               </span>
             </div>
           )}
@@ -180,6 +195,10 @@ export default function TracesTab({ session }) {
                 <span>Schema: {trace.bd_schema || 0}ms</span>
                 <span>DAX: {trace.bd_nldax || 0}ms</span>
                 <span>Exec: {trace.bd_exec || 0}ms</span>
+                {(() => {
+                  const other = trace.bd_other != null ? trace.bd_other : Math.max(0, (trace.total_ms || 0) - (trace.bd_parse || 0) - (trace.bd_schema || 0) - (trace.bd_nldax || 0) - (trace.bd_exec || 0) - (trace.bd_synth || 0));
+                  return other > 0 ? <span style={{ color: 'var(--text-muted)', opacity: 0.7 }}>Other: {other}ms</span> : null;
+                })()}
                 {trace.retries > 0 && <span style={{ color: 'var(--amber)' }}>Retries: {trace.retries}</span>}
                 {trace.physician_visible && <span style={{ color: 'var(--red)' }}>Physician Visible</span>}
               </div>

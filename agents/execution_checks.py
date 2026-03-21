@@ -1,4 +1,4 @@
-"""Agent 5 — Execution Agent — 9 Deterministic Rules from functional spec Section 6.5."""
+"""Agent 5 — Execution Agent — 10 Deterministic Rules from functional spec Section 6.5."""
 import sqlite3
 
 
@@ -90,15 +90,47 @@ def run_checks(db_path):
                 'agent_id': 'execution',
             })
 
-    # Rule 7: High CU throttling (throttle_events > 50 in 7d)
-    throttle_events = cu.get('throttle_events', 0)
-    if throttle_events > 50:
+        # Rule 10: High platform overhead (bd_other / total_ms > 0.35)
+        bd_other = trace.get('bd_other', None)
+        if bd_other is None:
+            bd_other = max(0, total_ms - (trace.get('bd_parse', 0) or 0) - bd_schema - bd_nldax - bd_exec - (trace.get('bd_synth', 0) or 0))
+        if total_ms > 0 and bd_other / total_ms > 0.35:
+            findings.append({
+                'issue': f'High platform overhead: {bd_other / total_ms:.0%} of total latency is unaccounted',
+                'severity': 'MEDIUM',
+                'evidence': f'bd_other={bd_other}ms / total={total_ms}ms — network, token counting, or Fabric platform overhead',
+                'impact_ms': 0,
+                'fix': 'Not directly fixable — indicates Fabric capacity constraint or network latency between components',
+                'agent_id': 'execution',
+            })
+
+    # Rule 7: Capacity throttling — uses throttle_state: 0=Active, 99=Throttled, 999=Suspended
+    throttle_state = cu.get('throttle_state', cu.get('throttle_events', 0))
+    if throttle_state >= 999:
         findings.append({
-            'issue': f'High CU throttling: {throttle_events} events in monitoring period',
+            'issue': 'Fabric capacity SUSPENDED — all queries blocked',
             'severity': 'CRITICAL',
-            'evidence': f'cu_metrics.throttle_events = {throttle_events}. Capacity constraint affecting all queries.',
+            'evidence': f'throttle_state={throttle_state}. Capacity is suspended — no queries can execute.',
+            'impact_ms': 10000,
+            'fix': 'Resume capacity in Fabric admin portal or contact your Fabric administrator',
+            'agent_id': 'execution',
+        })
+    elif throttle_state >= 99:
+        findings.append({
+            'issue': 'Fabric capacity currently THROTTLED — queries delayed',
+            'severity': 'CRITICAL',
+            'evidence': f'throttle_state={throttle_state}. Capacity is throttled — queries are being queued and delayed.',
             'impact_ms': 5000,
-            'fix': 'Increase capacity units or optimize workload distribution',
+            'fix': 'Reduce CU consumption by optimizing queries or increase capacity tier',
+            'agent_id': 'execution',
+        })
+    elif cu.get('ai_cu_consumed', 0) > 0 and cu.get('ai_cu_consumed', 0) > 0.85 * 100:
+        findings.append({
+            'issue': f'AI CU consumption high: {cu.get("ai_cu_consumed", 0):.0f} CUs (>85% of typical SKU allocation)',
+            'severity': 'HIGH',
+            'evidence': f'ai_cu_consumed={cu.get("ai_cu_consumed", 0):.0f}. Approaching throttle threshold.',
+            'impact_ms': 3000,
+            'fix': 'Optimize high-CU queries to reduce consumption before throttling occurs',
             'agent_id': 'execution',
         })
 

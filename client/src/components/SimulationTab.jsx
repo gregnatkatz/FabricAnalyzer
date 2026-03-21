@@ -194,12 +194,12 @@ export default function SimulationTab({ session, updateSession }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Estimated CU Reduction</span>
                 <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--green)', fontFamily: 'var(--font-mono)' }}>
-                  ~{Math.round((cuMetrics.ai_cu_28d || 0) * simResult.reductionPct / 100).toLocaleString()} AI CU/28d saved
+                  ~{Math.round((cuMetrics.ai_cu_consumed || cuMetrics.ai_cu_28d || 0) * simResult.reductionPct / 100).toLocaleString()} AI CUs saved
                 </span>
               </div>
-              {cuMetrics.throttle_events > 0 && simResult.reductionPct > 15 && (
+              {(cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0) >= 99 && simResult.reductionPct > 15 && (
                 <div style={{ fontSize: 11, color: 'var(--teal)', marginTop: 4 }}>
-                  Latency reduction of {simResult.reductionPct}% may reduce throttling events from {cuMetrics.throttle_events} toward zero.
+                  Latency reduction of {simResult.reductionPct}% may help resolve capacity {(cuMetrics.throttle_state ?? cuMetrics.throttle_events ?? 0) >= 999 ? 'suspension' : 'throttling'}.
                 </div>
               )}
             </div>

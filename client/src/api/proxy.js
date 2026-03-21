@@ -76,6 +76,13 @@ export async function collectDataDirect(payload) {
   });
 }
 
+export async function collectXmla(workspaceId, modelId, token, dbPath) {
+  return request('/fabric/xmla-collect', {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId, modelId, token, dbPath }),
+  });
+}
+
 export async function resetSession(scope, sessionId) {
   return request('/reset', {
     method: 'POST',

@@ -165,6 +165,8 @@ export default function FindingsTab({ session }) {
   const highFindings = findings.filter(f => f.severity === 'HIGH');
   const schemaFindings = findings.filter(f => f.agent_id === 'schema');
   const daxFindings = findings.filter(f => f.agent_id === 'dax');
+  const daxExprFindings = findings.filter(f => f.agent_id === 'dax_expression');
+  const xmlaFindings = findings.filter(f => f.agent_id === 'xmla');
   const execFindings = findings.filter(f => f.agent_id === 'execution');
   const topOffender = findings.length > 0 ? [...findings].sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0))[0] : null;
 
@@ -190,8 +192,10 @@ export default function FindingsTab({ session }) {
           </p>
           <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 8 }}>
             The findings span {new Set(findings.map(f => f.agent_id)).size} analysis dimensions:
-            {schemaFindings.length > 0 && <span> <strong>{schemaFindings.length} schema issues</strong> (table scope, measures, descriptions, relationships){daxFindings.length > 0 || execFindings.length > 0 ? ',' : '.'}</span>}
-            {daxFindings.length > 0 && <span> <strong>{daxFindings.length} DAX generation issues</strong> (retries, missing TOPN guards, failed queries, governance){execFindings.length > 0 ? ',' : '.'}</span>}
+            {schemaFindings.length > 0 && <span> <strong>{schemaFindings.length} schema issues</strong> (table scope, measures, descriptions, relationships),</span>}
+            {daxFindings.length > 0 && <span> <strong>{daxFindings.length} DAX generation issues</strong> (retries, missing TOPN guards, failed queries, governance),</span>}
+            {daxExprFindings.length > 0 && <span> <strong>{daxExprFindings.length} DAX expression issues</strong> (nesting depth, scan patterns, division safety, complexity),</span>}
+            {xmlaFindings.length > 0 && <span> <strong>{xmlaFindings.length} XMLA deep analysis issues</strong> (column cardinality, storage, relationships, many-to-many),</span>}
             {execFindings.length > 0 && <span> <strong>{execFindings.length} execution engine issues</strong> (outlier traces, CU throttling, dominant latency phases).</span>}
           </p>
           {topOffender && (

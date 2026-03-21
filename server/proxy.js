@@ -683,18 +683,36 @@ if exec_dominant:
         'latency_contribution': f'Avg execution = {sum(t.get("bd_exec",0) for t in exec_dominant)//len(exec_dominant):,}ms in affected queries'
     })
 
-# CU throttling
-throttle = cu.get('throttle_events', 0)
-if throttle > 50:
+# CU throttling — uses throttle_state: 0=Active, 99=Throttled, 999=Suspended
+throttle_state = cu.get('throttle_state', 0)
+if throttle_state >= 999:
+    fid += 1
+    findings.append({
+        'finding_id': f'F{fid:03d}', 'agent_id': 'execution', 'severity': 'CRITICAL', 'impact_ms': 10000,
+        'issue': 'Fabric capacity SUSPENDED — all queries blocked',
+        'affected_object': f'Fabric Capacity \u2192 {model_name} workspace',
+        'explanation': 'The Fabric capacity is currently suspended. No queries can execute until the capacity is resumed. This is a billing or admin action required.',
+        'affected_tables': [],
+        'affected_traces': [t['trace_id'] for t in traces],
+        'evidence': f'throttle_state={throttle_state} (Suspended) | AI CU: {cu.get("ai_cu_consumed",0):,.0f} | Query CU: {cu.get("query_cu_consumed",0):,.0f}',
+        'fix': 'Resume capacity in Fabric admin portal or contact your Fabric administrator.',
+        'resolution_steps': [
+            'Open Fabric admin portal and resume the capacity',
+            'Verify billing/subscription is active',
+            'Check for scheduled pause policies'
+        ],
+        'latency_contribution': 'All queries blocked while capacity is suspended'
+    })
+elif throttle_state >= 99:
     fid += 1
     findings.append({
         'finding_id': f'F{fid:03d}', 'agent_id': 'execution', 'severity': 'CRITICAL', 'impact_ms': 5000,
-        'issue': f'High CU throttling: {throttle} throttle events in 28-day window',
+        'issue': 'Fabric capacity currently THROTTLED — queries delayed',
         'affected_object': f'Fabric Capacity \u2192 {model_name} workspace',
-        'explanation': f'{throttle} throttle events detected over the last 28 days. Each throttle event adds 2-8 seconds of queuing delay as Fabric rate-limits the capacity unit consumption. With AI CU={cu.get("ai_cu_28d",0):,.0f} and Query CU={cu.get("query_cu_28d",0):,.0f}, the workspace is consistently hitting capacity limits.',
+        'explanation': f'The Fabric capacity is currently throttled. Queries are being queued and delayed. With AI CU={cu.get("ai_cu_consumed",0):,.0f} and Query CU={cu.get("query_cu_consumed",0):,.0f}, the workspace is hitting capacity limits.',
         'affected_tables': [],
         'affected_traces': [t['trace_id'] for t in traces],
-        'evidence': f'Throttle events: {throttle} | AI CU (28d): {cu.get("ai_cu_28d",0):,.0f} | Query CU (28d): {cu.get("query_cu_28d",0):,.0f} | P50/P95: {cu.get("p50_ms",0)/1000:.1f}s/{cu.get("p95_ms",0)/1000:.1f}s',
+        'evidence': f'throttle_state={throttle_state} (Throttled) | AI CU: {cu.get("ai_cu_consumed",0):,.0f} | Query CU: {cu.get("query_cu_consumed",0):,.0f} | P50/P95: {cu.get("p50_ms",0)/1000:.1f}s/{cu.get("p95_ms",0)/1000:.1f}s',
         'fix': 'Reduce CU consumption by optimizing queries (TOPN, fewer tables) or increase capacity tier.',
         'resolution_steps': [
             'Review CU consumption in Fabric Capacity Metrics app',
@@ -702,7 +720,25 @@ if throttle > 50:
             'Consider upgrading capacity tier if optimization insufficient',
             'Set up CU alerting to catch throttling early'
         ],
-        'latency_contribution': f'{throttle} throttle events \u00d7 ~2-8s queuing = significant cumulative delay'
+        'latency_contribution': 'Throttled capacity adds 2-8s queuing delay per query'
+    })
+elif cu.get('ai_cu_consumed', 0) > 0 and cu.get('ai_cu_consumed', 0) > 0.85 * 100:
+    fid += 1
+    findings.append({
+        'finding_id': f'F{fid:03d}', 'agent_id': 'execution', 'severity': 'HIGH', 'impact_ms': 3000,
+        'issue': f'AI CU consumption high: {cu.get("ai_cu_consumed",0):,.0f} CUs (>85% of typical SKU allocation)',
+        'affected_object': f'Fabric Capacity \u2192 {model_name} workspace',
+        'explanation': f'AI CU consumption is at {cu.get("ai_cu_consumed",0):,.0f} CUs, approaching capacity limits. Throttling may occur if consumption continues to increase.',
+        'affected_tables': [],
+        'affected_traces': [t['trace_id'] for t in traces],
+        'evidence': f'AI CU consumed: {cu.get("ai_cu_consumed",0):,.0f} | Query CU: {cu.get("query_cu_consumed",0):,.0f} | State: Active',
+        'fix': 'Optimize high-CU queries to reduce consumption before throttling occurs.',
+        'resolution_steps': [
+            'Identify top CU-consuming queries',
+            'Add TOPN limits and reduce table scope',
+            'Consider capacity tier upgrade as preventive measure'
+        ],
+        'latency_contribution': 'Approaching throttle threshold — proactive optimization recommended'
     })
 
 # Schema lookup dominant (>25%)
@@ -1197,12 +1233,12 @@ function buildReportHtml(session) {
   <div style="margin-bottom:30px">
     <h2 style="font-size:20px;font-weight:600;margin-bottom:12px">Capacity Unit (CU) Cost Correlation</h2>
     <table style="font-size:14px"><thead><tr style="border-bottom:2px solid #e0e0e0;text-align:left"><th style="padding:8px 12px">Metric</th><th style="padding:8px 12px">Value</th></tr></thead><tbody>
-      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">AI CU (28-day)</td><td style="padding:8px 12px;font-weight:600">${(cuMetrics.ai_cu_28d||0).toLocaleString()}</td></tr>
-      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">Query CU (28-day)</td><td style="padding:8px 12px;font-weight:600">${(cuMetrics.query_cu_28d||0).toLocaleString()}</td></tr>
-      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">Throttle Events</td><td style="padding:8px 12px;font-weight:600;color:${(cuMetrics.throttle_events||0)>0?'#d32f2f':'#2e7d32'}">${cuMetrics.throttle_events||0}</td></tr>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">AI CU Consumed</td><td style="padding:8px 12px;font-weight:600">${(cuMetrics.ai_cu_consumed||cuMetrics.ai_cu_28d||0).toLocaleString()}</td></tr>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">Query CU Consumed</td><td style="padding:8px 12px;font-weight:600">${(cuMetrics.query_cu_consumed||cuMetrics.query_cu_28d||0).toLocaleString()}</td></tr>
+      <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">Capacity State</td><td style="padding:8px 12px;font-weight:600;color:${(cuMetrics.throttle_state||cuMetrics.throttle_events||0)>=99?'#d32f2f':(cuMetrics.throttle_state||cuMetrics.throttle_events||0)>0?'#ff9800':'#2e7d32'}">${(cuMetrics.throttle_state||cuMetrics.throttle_events||0)>=999?'Suspended':(cuMetrics.throttle_state||cuMetrics.throttle_events||0)>=99?'Throttled':'Active'}</td></tr>
       <tr style="border-bottom:1px solid #f0f0f0"><td style="padding:8px 12px">P50 / P95 Latency</td><td style="padding:8px 12px;font-weight:600">${((cuMetrics.p50_ms||0)/1000).toFixed(1)}s / ${((cuMetrics.p95_ms||0)/1000).toFixed(1)}s</td></tr>
     </tbody></table>
-    ${sim.reductionPct > 0 ? `<div style="margin-top:12px;padding:10px 14px;background:#e8f5e9;border-radius:6px;border:1px solid #c8e6c9"><p style="font-size:13px;color:#2e7d32;margin:0">Estimated CU Reduction: ~${Math.round((cuMetrics.ai_cu_28d||0)*sim.reductionPct/100).toLocaleString()} AI CU/28d saved${cuMetrics.throttle_events>0?` | Latency reduction of ${sim.reductionPct}% may reduce throttling events from ${cuMetrics.throttle_events} toward zero.`:''}</p></div>` : ''}
+    ${sim.reductionPct > 0 ? `<div style="margin-top:12px;padding:10px 14px;background:#e8f5e9;border-radius:6px;border:1px solid #c8e6c9"><p style="font-size:13px;color:#2e7d32;margin:0">Estimated CU Reduction: ~${Math.round((cuMetrics.ai_cu_consumed||cuMetrics.ai_cu_28d||0)*sim.reductionPct/100).toLocaleString()} AI CUs saved${(cuMetrics.throttle_state||cuMetrics.throttle_events||0)>=99?` | Latency reduction of ${sim.reductionPct}% may help resolve capacity throttling.`:''}</p></div>` : ''}
   </div>` : ''}
 
   <div>
@@ -1363,12 +1399,23 @@ CREATE TABLE IF NOT EXISTS traces (
     dax_generated TEXT, tables_used TEXT, pass_fail TEXT,
     physician_visible INTEGER, bd_parse INTEGER, bd_schema INTEGER,
     bd_nldax INTEGER, bd_exec INTEGER, bd_synth INTEGER,
+    bd_other INTEGER DEFAULT 0,
     run_type TEXT, run_id TEXT
 );
 CREATE TABLE IF NOT EXISTS cu_metrics (
     metric_id TEXT PRIMARY KEY, model_id TEXT, workspace_id TEXT,
-    ai_cu_28d REAL, query_cu_28d REAL, throttle_events INTEGER,
+    ai_cu_consumed REAL, query_cu_consumed REAL, throttle_state INTEGER,
     p50_ms INTEGER, p95_ms INTEGER, captured_at TEXT
+);
+CREATE TABLE IF NOT EXISTS column_stats (
+    col_stat_id TEXT PRIMARY KEY, model_id TEXT, table_name TEXT,
+    column_name TEXT, cardinality INTEGER, data_size_mb REAL,
+    segment_count INTEGER, captured_at TEXT
+);
+CREATE TABLE IF NOT EXISTS relationship_stats (
+    rel_stat_id TEXT PRIMARY KEY, model_id TEXT, from_table TEXT,
+    to_table TEXT, from_cardinality INTEGER, to_cardinality INTEGER,
+    cross_filter TEXT, is_active INTEGER, captured_at TEXT
 );
 CREATE TABLE IF NOT EXISTS findings (
     finding_id INTEGER PRIMARY KEY AUTOINCREMENT, model_id TEXT, agent_id TEXT,
@@ -1499,11 +1546,12 @@ for t in traces_list:
     bd_nldax = int(total_ms * 0.35)
     bd_exec = int(total_ms * 0.40)
     bd_synth = total_ms - bd_parse - bd_schema - bd_nldax - bd_exec
-    db.execute('INSERT INTO traces VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    bd_other = max(0, total_ms - bd_parse - bd_schema - bd_nldax - bd_exec - bd_synth)
+    db.execute('INSERT INTO traces VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         (trace_id, f'agent_{model_id[:8]}', model_id,
          t.get('question', ''), t.get('category', 'general'),
          total_ms, t.get('retries', 0), t.get('daxGenerated', ''), t.get('tablesUsed', ''), 'fail' if total_ms > 10000 else 'pass',
-         0, bd_parse, bd_schema, bd_nldax, bd_exec, bd_synth,
+         0, bd_parse, bd_schema, bd_nldax, bd_exec, bd_synth, bd_other,
          'live', data.get('sessionId', '')))
 
 # Insert CU metrics placeholder
@@ -1567,6 +1615,45 @@ print(json.dumps(result))
     if (code !== 0) {
       console.error('[direct-collector] stderr:', stderr);
       return res.status(500).json({ error: stderr || 'Direct collection failed' });
+    }
+    try {
+      const result = JSON.parse(output);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: `Parse error: ${e.message}`, stderr });
+    }
+  });
+});
+
+// XMLA Collection endpoint — runs XMLA DMV queries via Python subprocess
+app.post('/api/fabric/xmla-collect', (req, res) => {
+  const { workspaceId, modelId, token, dbPath } = req.body;
+  if (!workspaceId || !modelId || !token) {
+    return res.status(400).json({ error: 'workspaceId, modelId, and token are required' });
+  }
+
+  const targetDb = dbPath || join(SQLITE_DIR, 'current.db');
+  const args = [
+    join(__dirname, '..', 'collector', 'xmla_collector.py'),
+    '--workspace-id', workspaceId,
+    '--model-id', modelId,
+    '--token', token,
+    '--db', targetDb,
+  ];
+
+  const py = spawn(PYTHON_PATH, args, {
+    cwd: join(__dirname, '..'),
+    env: { ...process.env, PYTHONPATH: join(__dirname, '..') },
+  });
+
+  let output = '';
+  let stderr = '';
+  py.stdout.on('data', d => output += d);
+  py.stderr.on('data', d => { stderr += d; console.error('[xmla-collector]', d.toString()); });
+  py.on('close', (code) => {
+    if (code !== 0) {
+      console.error('[xmla-collector] stderr:', stderr);
+      return res.status(500).json({ error: stderr || 'XMLA collection failed' });
     }
     try {
       const result = JSON.parse(output);
