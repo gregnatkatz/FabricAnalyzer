@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS traces (
     bd_nldax INTEGER,
     bd_exec INTEGER,
     bd_synth INTEGER,
+    bd_other INTEGER DEFAULT 0,
     run_type TEXT,
     run_id TEXT
 );
@@ -99,11 +100,34 @@ CREATE TABLE IF NOT EXISTS cu_metrics (
     metric_id TEXT PRIMARY KEY,
     model_id TEXT,
     workspace_id TEXT,
-    ai_cu_28d REAL,
-    query_cu_28d REAL,
-    throttle_events INTEGER,
+    ai_cu_consumed REAL,
+    query_cu_consumed REAL,
+    throttle_state INTEGER,
     p50_ms INTEGER,
     p95_ms INTEGER,
+    captured_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS column_stats (
+    col_stat_id TEXT PRIMARY KEY,
+    model_id TEXT,
+    table_name TEXT,
+    column_name TEXT,
+    cardinality INTEGER,
+    data_size_mb REAL,
+    segment_count INTEGER,
+    captured_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS relationship_stats (
+    rel_stat_id TEXT PRIMARY KEY,
+    model_id TEXT,
+    from_table TEXT,
+    to_table TEXT,
+    from_cardinality INTEGER,
+    to_cardinality INTEGER,
+    cross_filter TEXT,
+    is_active INTEGER,
     captured_at TEXT
 );
 
@@ -174,6 +198,25 @@ def build_sample_db():
         ('m10', 'FactMedications', 'Medication Count', 'COUNTROWS(FactMedications)', None, 0),
         ('m11', 'FactProcedures', 'Procedure Count', 'COUNTROWS(FactProcedures)', None, 0),
         ('m12', 'FactEncounters', 'Mortality Rate', 'DIVIDE([Deaths],[Total Encounters])', None, 0),
+        # Anti-pattern measures for DAX Expression Agent (EX-1 through EX-8)
+        ('m13', 'FactEncounters', 'Complex LOS Ratio',
+         'CALCULATE(CALCULATE(CALCULATE(AVERAGE(FactEncounters[LOS_Days]), FILTER(DimDepartment, DimDepartment[Type]="ICU")), DimDate[Year]=2024), ALL(DimPayor))',
+         None, 0),  # EX-1: triple nested CALCULATE
+        ('m14', 'FactCharges', 'Charge Per Encounter',
+         'SUMX(FactCharges, FactCharges[Amount] / FactCharges[Units])',
+         None, 0),  # EX-2: iterator on fact table + EX-3: bare division
+        ('m15', 'FactEncounters', 'Filtered LOS',
+         'CALCULATE(AVERAGE(FactEncounters[LOS_Days]), FILTER(FactEncounters, FactEncounters[LOS_Days] > 5))',
+         None, 0),  # EX-4: FILTER on full table
+        ('m16', 'FactEncounters', 'Dept Crossjoin Matrix',
+         'COUNTROWS(CROSSJOIN(DimDepartment, DimPhysician))',
+         None, 0),  # EX-5: cartesian product risk
+        ('m17', 'FactEncounters', 'Total LOS All Depts',
+         'CALCULATE(SUM(FactEncounters[LOS_Days]), ALL(DimDepartment))',
+         None, 0),  # EX-6: ALL without ALLSELECTED
+        ('m18', 'FactEncounters', 'Mega Measure',
+         'VAR _base = CALCULATE(AVERAGE(FactEncounters[LOS_Days]), FILTER(FactEncounters, FactEncounters[LOS_Days] > 3)) VAR _adj = CALCULATE(SUM(FactCharges[Amount]), FILTER(FactCharges, FactCharges[Amount] > 100)) VAR _ratio = DIVIDE(_base, _adj) VAR _dept = CALCULATE(COUNTROWS(FactEncounters), ALL(DimDepartment)) VAR _final = CALCULATE(CALCULATE(_ratio * _dept, DimDate[Year] = 2024), DimPayor[Type] = "Commercial") RETURN IF(HASONEVALUE(DimDepartment[Name]), _final, BLANK()) -- extended measure with multiple patterns for analysis purposes to demonstrate complex DAX anti-patterns in healthcare analytics scenarios',
+         None, 0),  # EX-7: >500 chars + EX-8: HASONEVALUE
     ]
     for mid, tid, name, expr, desc, hidden in measure_data:
         tbl_id = f'tbl_{table_names.index(tid)}' if tid in table_names else 'tbl_0'
@@ -295,12 +338,25 @@ def build_sample_db():
          250, 5500, 6500, 2800, 300, 'baseline', 'run_1'),
     ]
     for t in traces:
-        db.execute('INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', t)
+        # Compute bd_other: unaccounted gap between total_ms and sum of breakdowns
+        # t layout: (trace_id, agent_id, model_id, question, category, total_ms, retries,
+        #            dax_generated, tables_used, pass_fail, physician_visible,
+        #            bd_parse, bd_schema, bd_nldax, bd_exec, bd_synth, run_type, run_id)
+        total_ms = t[5]
+        bd_parse = t[11]
+        bd_schema = t[12]
+        bd_nldax = t[13]
+        bd_exec = t[14]
+        bd_synth = t[15]
+        bd_other = max(0, total_ms - bd_parse - bd_schema - bd_nldax - bd_exec - bd_synth)
+        # Insert with bd_other between bd_synth and run_type
+        row = t[:16] + (bd_other,) + t[16:]
+        db.execute('INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', row)
 
-    # CU Metrics — throttling (KNOWN ISSUE: exec #7)
+    # CU Metrics — throttle_state: 0=Active, 99=Throttled, 999=Suspended
     db.execute('INSERT INTO cu_metrics VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (
         'cu_1', 'sample_model_1', 'ws_sample_1',
-        1250.0, 3400.0, 72, 18500, 42000, '2025-01-15T12:00:00Z',
+        1250.0, 3400.0, 99, 18500, 42000, '2025-01-15T12:00:00Z',
     ))
 
     # Relationships
@@ -317,6 +373,34 @@ def build_sample_db():
     for rid, from_t, to_t, rtype, active, cf in rels:
         db.execute('INSERT INTO relationships VALUES (?, ?, ?, ?, ?, ?, ?)', (
             rid, 'sample_model_1', from_t, to_t, rtype, active, cf,
+        ))
+
+    # XMLA column stats — sample data for XMLA deep analysis rules (XM-1 through XM-6)
+    xmla_col_stats = [
+        ('cs_1', 'FactEncounters', 'EncounterID', 1500000, 12.5, 4),
+        ('cs_2', 'FactEncounters', 'PatientID', 250000, 2.1, 2),
+        ('cs_3', 'FactEncounters', 'NoteText', 1200000, 85.0, 15),  # XM-1: high cardinality + XM-2: large storage + XM-5: high segments
+        ('cs_4', 'FactCharges', 'ChargeDescription', 50000, 0.8, 3),
+        ('cs_5', 'DimPatient', 'PatientName', 250000, 3.2, 2),
+        ('cs_6', 'FactEncounters', 'InternalCode', 800000, 55.0, 12),  # XM-2: >50MB + XM-5: >10 segments
+    ]
+    for csid, tbl, col, card, size, segs in xmla_col_stats:
+        db.execute('INSERT INTO column_stats VALUES (?, ?, ?, ?, ?, ?, ?, datetime("now"))', (
+            csid, 'sample_model_1', tbl, col, card, size, segs,
+        ))
+
+    # XMLA relationship stats — sample data for relationship rules
+    xmla_rel_stats = [
+        ('rs_1', 'FactEncounters', 'DimPatient', 750000, 1, 'OneDirection', 1),
+        ('rs_2', 'FactEncounters', 'DimDiagnosis', 750000, 800, 'BothDirections', 1),  # XM-3: bidirectional
+        ('rs_3', 'FactCharges', 'FactEncounters', 1200000, 750000, 'OneDirection', 1),  # XM-6: many-to-many
+        ('rs_4', 'FactLabResults', 'DimPatient', 500000, 1, 'OneDirection', 0),  # Inactive
+        ('rs_5', 'FactMedications', 'DimPatient', 300000, 1, 'OneDirection', 0),  # Inactive
+        ('rs_6', 'FactProcedures', 'DimPatient', 200000, 1, 'OneDirection', 0),  # Inactive (3 total -> XM-4)
+    ]
+    for rsid, from_t, to_t, from_c, to_c, cf, active in xmla_rel_stats:
+        db.execute('INSERT INTO relationship_stats VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime("now"))', (
+            rsid, 'sample_model_1', from_t, to_t, from_c, to_c, cf, active,
         ))
 
     db.commit()

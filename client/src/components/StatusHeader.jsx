@@ -106,6 +106,30 @@ export default function StatusHeader({ session }) {
       <StatusDot status={statuses.llm} label="LLM Agents" detail={details.llm} />
       <StatusDot status={statuses.chromadb} label="ChromaDB" detail={details.chromadb} />
       <StatusDot status={statuses.fabric} label="Fabric" detail={details.fabric} />
+      {session?.xmlaComplete && (
+        <StatusDot status="connected" label="XMLA" detail="XMLA deep analysis data collected" />
+      )}
+      {session?.cuMetrics && (() => {
+        const cu = session.cuMetrics;
+        const ts = cu.throttle_state ?? cu.throttle_events ?? 0;
+        const aiCu = cu.ai_cu_consumed ?? cu.ai_cu_28d ?? 0;
+        let cuStatus = 'checking';
+        let cuDetail = 'CU data not available';
+        if (ts >= 999) {
+          cuStatus = 'disconnected';
+          cuDetail = 'Capacity SUSPENDED';
+        } else if (ts >= 99) {
+          cuStatus = 'disconnected';
+          cuDetail = 'Capacity THROTTLED';
+        } else if (aiCu > 0.85 * 100) {
+          cuStatus = 'partial';
+          cuDetail = `AI CU: ${aiCu} (>85% — approaching throttle)`;
+        } else if (aiCu > 0 || ts === 0) {
+          cuStatus = 'connected';
+          cuDetail = `Active — AI CU: ${aiCu}`;
+        }
+        return <StatusDot status={cuStatus} label="CU" detail={cuDetail} />;
+      })()}
     </div>
   );
 }

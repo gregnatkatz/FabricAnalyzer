@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { loginPopup, logout, getAccessToken, setClientConfig, getClientConfig, setManualToken } from '../auth/msalConfig';
-import { loadSampleDataset, getWorkspaces, getModels, collectData, collectDataDirect, getScenarios, loadScenario, healthCheck } from '../api/proxy';
+import { loadSampleDataset, getWorkspaces, getModels, collectData, collectDataDirect, collectXmla, getScenarios, loadScenario, healthCheck } from '../api/proxy';
 
 // Comprehensive setup checklist for Fabric Data Agent testing
 const SETUP_STEPS = [
@@ -127,6 +127,9 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [directAgentName, setDirectAgentName] = useState('');
   const [directInstructions, setDirectInstructions] = useState('');
   const [showDirectEntry, setShowDirectEntry] = useState(false);
+  const [xmlaStatus, setXmlaStatus] = useState(''); // '', 'collecting', 'complete', 'error'
+  const [xmlaError, setXmlaError] = useState('');
+  const [xmlaSummary, setXmlaSummary] = useState(null);
 
   const toggleStep = (stepId) => {
     setCheckedSteps(prev => ({ ...prev, [stepId]: !prev[stepId] }));
@@ -339,6 +342,21 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
     }
   };
 
+  const runAutoXmla = async (wsId, modelId, dbPath) => {
+    try {
+      setXmlaStatus('collecting');
+      setXmlaError('');
+      const token = await getAccessToken().catch(() => manualTokenInput.trim());
+      const result = await collectXmla(wsId, modelId, token, dbPath);
+      setXmlaSummary(result.summary || {});
+      setXmlaStatus('complete');
+      updateSession({ xmlaComplete: true });
+    } catch (err) {
+      setXmlaError(err.message);
+      setXmlaStatus('error');
+    }
+  };
+
   const handleDirectCollect = async (tracesFromPortal) => {
     if (!workspaceId.trim() || !directAgentId.trim()) return;
     try {
@@ -364,8 +382,10 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
         collectionComplete: true,
         workspaceId: workspaceId.trim(),
       });
-      setStatus('Live agent data loaded successfully');
+      setStatus('Live agent data loaded — running XMLA collection...');
       onNavigate('traces');
+      // Auto-trigger XMLA collection in background
+      runAutoXmla(workspaceId.trim(), directAgentId.trim(), result.dbPath);
     } catch (err) {
       setError(`Direct collection failed: ${err.message}`);
     } finally {
@@ -943,6 +963,60 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
             <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
               Find IDs in the Fabric URL: /groups/&lt;workspace-id&gt;/aiskills/&lt;agent-id&gt;
             </p>
+
+            {/* XMLA Deep Analysis — Auto Status */}
+            {xmlaStatus && (
+              <div style={{
+                marginTop: 16,
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                padding: 12,
+                background: xmlaStatus === 'complete' ? 'rgba(34,197,94,0.08)'
+                  : xmlaStatus === 'error' ? 'rgba(239,68,68,0.08)'
+                  : 'rgba(0,188,212,0.08)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                  <span style={{ fontSize: 14 }}>
+                    {xmlaStatus === 'collecting' ? '...' : xmlaStatus === 'complete' ? 'OK' : '!'}
+                  </span>
+                  <span style={{
+                    fontWeight: 600,
+                    color: xmlaStatus === 'complete' ? 'var(--green)'
+                      : xmlaStatus === 'error' ? 'var(--red)'
+                      : 'var(--teal)',
+                  }}>
+                    {xmlaStatus === 'collecting' ? 'Collecting model metadata (XMLA)...'
+                      : xmlaStatus === 'complete'
+                        ? `XMLA Complete: ${xmlaSummary?.column_stats_count || 0} columns, ${xmlaSummary?.relationship_stats_count || 0} relationships`
+                        : 'XMLA collection failed'}
+                  </span>
+                </div>
+                {xmlaStatus === 'error' && xmlaError && (
+                  <p style={{ fontSize: 11, color: 'var(--red)', marginTop: 6 }}>{xmlaError}</p>
+                )}
+                {xmlaStatus === 'error' && (
+                  <button
+                    onClick={() => {
+                      if (session.dbPath && session.workspaceId) {
+                        runAutoXmla(session.workspaceId, session.modelId || directAgentId.trim(), session.dbPath);
+                      }
+                    }}
+                    style={{
+                      marginTop: 8,
+                      padding: '4px 12px',
+                      borderRadius: 4,
+                      border: '1px solid var(--border)',
+                      background: 'rgba(255,255,255,0.05)',
+                      color: 'var(--text-muted)',
+                      fontSize: 11,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Retry XMLA
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
 

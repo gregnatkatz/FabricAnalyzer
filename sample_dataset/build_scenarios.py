@@ -64,12 +64,23 @@ CREATE TABLE IF NOT EXISTS traces (
     category TEXT, total_ms INTEGER, retries INTEGER, dax_generated TEXT,
     tables_used TEXT, pass_fail TEXT, physician_visible INTEGER,
     bd_parse INTEGER, bd_schema INTEGER, bd_nldax INTEGER, bd_exec INTEGER,
-    bd_synth INTEGER, run_type TEXT, run_id TEXT
+    bd_synth INTEGER, bd_other INTEGER DEFAULT 0,
+    run_type TEXT, run_id TEXT
 );
 CREATE TABLE IF NOT EXISTS cu_metrics (
-    metric_id TEXT PRIMARY KEY, model_id TEXT, workspace_id TEXT, ai_cu_28d REAL,
-    query_cu_28d REAL, throttle_events INTEGER, p50_ms INTEGER, p95_ms INTEGER,
+    metric_id TEXT PRIMARY KEY, model_id TEXT, workspace_id TEXT, ai_cu_consumed REAL,
+    query_cu_consumed REAL, throttle_state INTEGER, p50_ms INTEGER, p95_ms INTEGER,
     captured_at TEXT
+);
+CREATE TABLE IF NOT EXISTS column_stats (
+    col_stat_id TEXT PRIMARY KEY, model_id TEXT, table_name TEXT,
+    column_name TEXT, cardinality INTEGER, data_size_mb REAL,
+    segment_count INTEGER, captured_at TEXT
+);
+CREATE TABLE IF NOT EXISTS relationship_stats (
+    rel_stat_id TEXT PRIMARY KEY, model_id TEXT, from_table TEXT,
+    to_table TEXT, from_cardinality INTEGER, to_cardinality INTEGER,
+    cross_filter TEXT, is_active INTEGER, captured_at TEXT
 );
 CREATE TABLE IF NOT EXISTS findings (
     finding_id INTEGER PRIMARY KEY AUTOINCREMENT, model_id TEXT, agent_id TEXT,
@@ -128,9 +139,10 @@ def _build_db(scenario_id, model_name, workspace_name, domain, storage_mode,
     # Traces
     for i, t in enumerate(traces):
         q, cat, total_ms, retries, dax, tables_used, pf, phys_vis, bd_p, bd_s, bd_d, bd_e, bd_sy = t
-        db.execute('INSERT INTO traces VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        bd_other = max(0, total_ms - bd_p - bd_s - bd_d - bd_e - bd_sy)
+        db.execute('INSERT INTO traces VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                    (f't{i}', f'agent_s{scenario_id:02d}', model_id, q, cat, total_ms, retries,
-                    dax, tables_used, pf, phys_vis, bd_p, bd_s, bd_d, bd_e, bd_sy, 'baseline', 'run_1'))
+                    dax, tables_used, pf, phys_vis, bd_p, bd_s, bd_d, bd_e, bd_sy, bd_other, 'baseline', 'run_1'))
 
     # CU Metrics
     ai_cu, query_cu, throttle, p50, p95 = cu_metrics

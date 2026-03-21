@@ -141,7 +141,7 @@ export default function WorkflowTab({ session, updateSession }) {
       {/* Pipeline diagram */}
       <div className="glass" style={{ padding: 32, marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-          <h3 style={{ fontSize: 16, fontWeight: 600 }}>9-Agent Analysis Pipeline</h3>
+          <h3 style={{ fontSize: 16, fontWeight: 600 }}>{AGENT_ORDER.length}-Agent Analysis Pipeline</h3>
           <button
             className="btn-primary"
             onClick={handleRunAnalysis}

@@ -12,7 +12,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents import domain_intelligence, adversarial_probe, schema_checks, dax_checks, execution_checks
+from agents import domain_intelligence, adversarial_probe, schema_checks, dax_checks, execution_checks, dax_expression_checks, xmla_checks
 from agents.prompts import PROMPTS, AGENT_CHROMA_QUERIES
 
 try:
@@ -371,6 +371,22 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
         all_findings.extend(merged)
         write_findings_to_db(db_path, merged, agent_id_override='dax')
         results['dax'] = {'findings': merged}
+
+    # Agent 4b: DAX Expression (deterministic only — 8 rules on measure expressions)
+    if agent_filter in ('all', 'dax_expression'):
+        print('[pipeline] Running Agent 4b: DAX Expression', file=sys.stderr)
+        expr_findings = dax_expression_checks.run_expression_checks(db_path)
+        all_findings.extend(expr_findings)
+        write_findings_to_db(db_path, expr_findings, agent_id_override='dax_expression')
+        results['dax_expression'] = {'findings': expr_findings}
+
+    # Agent XM: XMLA Deep Analysis (deterministic only — 6 rules on column_stats and relationship_stats)
+    if agent_filter in ('all', 'xmla'):
+        print('[pipeline] Running Agent XM: XMLA Deep Analysis', file=sys.stderr)
+        xmla_findings = xmla_checks.run_xmla_checks(db_path)
+        all_findings.extend(xmla_findings)
+        write_findings_to_db(db_path, xmla_findings, agent_id_override='xmla')
+        results['xmla'] = {'findings': xmla_findings}
 
     # Agent 5: Execution (deterministic + LLM)
     if agent_filter in ('all', 'execution'):
