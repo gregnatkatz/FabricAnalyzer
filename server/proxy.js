@@ -132,10 +132,10 @@ app.post('/api/agent', async (req, res) => {
       // System instructions go in 'instructions' field, not as a message
       // IMPORTANT: max_output_tokens is shared between reasoning AND message content.
       // With too-low a value, the model spends all tokens on reasoning and returns 0 message content.
-      // Use 4096 tokens — enough for reasoning + a full response while keeping latency under 120s.
+      // Use 8192 tokens — enough for reasoning + a full response while keeping latency reasonable.
       // Set reasoning.effort = 'medium' (minimum supported by gpt-5.4-pro; 'low' is not available).
-      // Lower token budget = faster responses = fewer timeouts.
-      const reasoningMaxTokens = Math.max(maxTokens, 4096);
+      // 4096 was too low (model spent all tokens on reasoning, 0 for content). 8192 balances speed vs completeness.
+      const reasoningMaxTokens = Math.max(maxTokens, 8192);
       body = {
         model,
         instructions: system,
@@ -181,9 +181,9 @@ app.post('/api/agent', async (req, res) => {
     };
 
     // Retry logic: reasoning models get multiple attempts with escalating timeouts
-    // GPT-5.4 Pro with medium reasoning effort needs 120-300s for complex pipeline prompts.
-    // Use generous timeouts — reasoning models do deep thinking on large inputs.
-    const timeouts = useResponsesApi ? [120, 180, 240] : [180];
+    // GPT-5.4 Pro with medium reasoning effort needs 240-480s for complex pipeline prompts.
+    // Reasoning models do deep thinking on large inputs — be very patient.
+    const timeouts = useResponsesApi ? [240, 360, 480] : [180];
     let lastError = null;
     let data = null;
 
