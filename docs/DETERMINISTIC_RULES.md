@@ -10,7 +10,7 @@ FabricAnalyzer uses 29 deterministic rules that run without any LLM call. These 
 | DAX Agent | 9 | `traces` (per-trace + global) | DAX generation patterns and routing |
 | Execution Agent | 9 | `traces`, `cu_metrics`, `models`, `tables` | Runtime performance and infrastructure |
 
-Combined acceptance test detection rate: **80% (20/25 known issues)**, false positive rate: **4%**.
+Combined acceptance test detection rate: **80% (20/25 known issues)**, false positive rate: **15% (4/26)**.
 
 ---
 

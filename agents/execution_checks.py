@@ -104,6 +104,21 @@ def run_checks(db_path):
                 'agent_id': 'execution',
             })
 
+    # Rule 10b: High retry density (aggregate across all traces)
+    total_retries = sum(t.get('retries', 0) for t in traces)
+    total_questions = len(traces)
+    if total_questions > 0:
+        retry_density = total_retries / total_questions
+        if retry_density > 2.0:
+            findings.append({
+                'issue': f'High retry density: avg {retry_density:.1f} retries/question ({total_retries} retries across {total_questions} questions)',
+                'severity': 'CRITICAL',
+                'evidence': f'Retry density {retry_density:.1f}x exceeds 2.0 threshold — indicates systematic DAX generation failure, not random timeouts. Root cause is likely missing routing rules or ambiguous schema.',
+                'impact_ms': int(total_retries * 3100 / total_questions),
+                'fix': 'Add explicit routing rules mapping query keywords to correct tables. High density means every question is hitting the wrong table first.',
+                'agent_id': 'execution',
+            })
+
     # Rule 7: Capacity throttling — uses throttle_state: 0=Active, 99=Throttled, 999=Suspended
     throttle_state = cu.get('throttle_state', cu.get('throttle_events', 0))
     if throttle_state >= 999:

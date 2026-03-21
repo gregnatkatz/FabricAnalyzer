@@ -210,7 +210,7 @@ Node.js v22's native `fetch` and the `https` module both hang indefinitely when 
 | DAX | 9 | High retry (>2 CRITICAL), TOPN absent on cross-entity, wrong table first, physician visible, NL2DAX/NL2SQL contamination |
 | Execution | 9 | Outlier >45s (CRITICAL), slow >20s, execution/DAX/schema phase dominant, CU throttling, V-Order, Direct Lake framing |
 
-Detection rate from acceptance tests: **80% (20/25)**, false positive rate: **4%**.
+Detection rate from acceptance tests: **80% (20/25)**, false positive rate: **15% (4/26)**.
 
 ## 500-Issue Latency Catalog
 
@@ -273,7 +273,7 @@ FabricAnalyzer/
 │   │   ├── components/
 │   │   │   ├── ConnectTab.jsx       # OAuth, sample dataset, direct collection
 │   │   │   ├── TracesTab.jsx        # Trace table with latency breakdowns
-│   │   │   ├── WorkflowTab.jsx      # 9-agent pipeline UI with model selection
+│   │   │   ├── WorkflowTab.jsx      # 11-agent pipeline UI with model selection
 │   │   │   ├── FindingsTab.jsx      # Expandable findings with severity/impact
 │   │   │   ├── SimulationTab.jsx    # Fix toggles + before/after chart
 │   │   │   ├── ValidationTab.jsx    # Fix selection + validation pipeline
@@ -294,7 +294,7 @@ FabricAnalyzer/
 │   ├── .env                         # API keys, model config
 │   └── .env.example                 # Template
 ├── agents/
-│   ├── pipeline.py                  # 9-agent orchestrator
+│   ├── pipeline.py                  # 11-agent orchestrator
 │   ├── prompts.py                   # System prompts for all LLM agents
 │   ├── domain_intelligence.py       # Agent 1: rule-based domain inference
 │   ├── adversarial_probe.py         # Agent 2: BehavioralProfile builder

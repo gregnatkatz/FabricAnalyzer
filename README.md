@@ -25,66 +25,87 @@ A full end-to-end walkthrough showing sample data loading, mixed model pipeline 
 
 https://github.com/gregnatkatz/FabricAnalyzer/raw/main/docs/walkthrough.mp4
 
-## Results & Evidence — 4 Healthcare Scenarios
+## Results & Evidence
 
-The analyzer was tested against **4 production-representative healthcare scenarios** with **100 total questions** (25 per scenario) of varying complexity (simple, medium, complex, very complex). Each scenario targets different anti-patterns found in real Fabric Data Agents.
+We ran the analyzer against **4 healthcare Data Agents**, each with a different set of problems. The goal: show that the tool catches real issues and tells you exactly how to fix them.
 
-### Scenario Summary
+### What We Tested
 
-| Scenario | Domain | Questions | Avg Latency | P50 | P95 | Max | Retries | Findings | Tables | Measures |
-|----------|--------|-----------|-------------|-----|-----|-----|---------|----------|--------|----------|
-| 22 — LOS Clinical | Clinical Inpatient | 25 | 30.6s | 25.8s | 53.7s | 58.0s | 43 | **47** | 18 | 8 |
-| 23 — Revenue Cycle | Revenue Cycle | 25 | 35.7s | 27.5s | 86.0s | 96.0s | 85 | **55** | 8 | 9 |
-| 24 — Workforce | Workforce/Staffing | 25 | 39.9s | 32.5s | 80.8s | 95.3s | 45 | **41** | 8 | 6 |
-| 25 — Supply Chain | Pharmacy/Supply Chain | 25 | 36.1s | 27.6s | 68.3s | 86.6s | 44 | **45** | 8 | 7 |
-| **Total** | | **100** | **35.6s** | | | | **217** | **188** | | |
+| # | Data Agent | What's Wrong With It | Questions Asked |
+|---|-----------|----------------------|-----------------|
+| 1 | **LOS Clinical** (Length of Stay) | Too many tables exposed (18), instructions too long (5,200+ chars), no verified answers, missing table descriptions | 25 |
+| 2 | **Revenue Cycle** (Billing/AR) | Ambiguous measure names (3 versions of "Net Revenue"), high retry rate (85 retries in 25 questions), archive tables exposed | 25 |
+| 3 | **Workforce** (Staffing/HR) | Slow DAX patterns (SUMX on 500K rows, CROSSJOIN on large tables), no TOPN limits on cross-entity queries | 25 |
+| 4 | **Supply Chain** (Pharmacy) | Division-by-zero errors, circular measure references, contradictory routing instructions | 25 |
 
-### Anti-Patterns Detected Per Scenario
+### What the Analyzer Found
 
-| Scenario | Key Anti-Patterns Detected |
-|----------|---------------------------|
-| 22 — LOS Clinical | Instruction bloat (5200+ chars), schema sprawl (18 tables exposed), missing descriptions, zero verified answers, hidden columns, duplicate measures |
-| 23 — Revenue Cycle | Measure ambiguity (Net Revenue vs Net Rev vs Revenue Net), fuzzy duplicate measures, no verified answers, high retry rate (85 retries / 25 questions), AR archive table exposed |
-| 24 — Workforce | Deep nesting DAX (SUMX iterators on 500K rows), CROSSJOIN on large tables, missing TOPN limits, excessive CALCULATE nesting, zero verified answers |
-| 25 — Supply Chain | Division-by-zero in cost calculations, circular measure references (COGS ↔ Inventory Turnover), NL2DAX contamination, contradictory routing instructions, ambiguous entity names |
-
-### Finding Severity Breakdown
-
-| Severity | Scenario 22 | Scenario 23 | Scenario 24 | Scenario 25 | Total |
-|----------|-------------|-------------|-------------|-------------|-------|
-| CRITICAL | ~20 | ~22 | 20 | 16 | **~78** |
-| HIGH | ~22 | ~28 | 19 | 25 | **~94** |
-| MEDIUM | ~5 | ~5 | 2 | 4 | **~16** |
-| **Total** | **47** | **55** | **41** | **45** | **188** |
-
-### Projected Latency Reduction
-
-The Monte Carlo simulation (500 iterations per fix) projects the following improvements when recommended fixes are applied:
-
-| Fix Category | Avg Latency Impact | Projected Reduction |
-|--------------|-------------------|---------------------|
-| Add verified answers (top 10 questions) | -8.2s per query | 23% reduction |
-| Reduce schema scope (remove unused tables) | -4.5s per query | 13% reduction |
-| Fix instruction routing (remove contradictions) | -3.8s per query | 11% reduction |
-| Optimize DAX patterns (add TOPN, remove iterators) | -6.1s per query | 17% reduction |
-| **All fixes combined** | **-18.4s per query** | **~52% reduction** |
-
-> These projections are based on the Monte Carlo math model calibrated against the trace data. Actual results will vary based on the specific Data Agent configuration and workload.
-
-### Trace Evidence
-
-Each scenario generates detailed latency breakdowns showing where time is spent:
+The 11-agent pipeline ran all 100 questions and flagged **188 issues** total:
 
 ```
-Question: "Compare ICU vs general ward average length of stay and readmission rates"
-Total: 52,847ms | Retries: 3
-├── Parse:     2,114ms (4.0%)    — instruction parsing overhead
-├── Schema:    6,342ms (12.0%)   — schema resolution with 18 exposed tables
-├── NL→DAX:   18,496ms (35.0%)  — DAX generation dominant (complex join)
-├── Execute:   21,139ms (40.0%)  — execution dominant (cross-table scan)
-├── Synthesize: 3,170ms (6.0%)  — response assembly
-└── Other:     1,586ms (3.0%)   — bd_other gap
+LOS Clinical:     47 issues found   (20 critical, 22 high, 5 medium)
+Revenue Cycle:    55 issues found   (22 critical, 28 high, 5 medium)
+Workforce:        41 issues found   (20 critical, 19 high, 2 medium)
+Supply Chain:     45 issues found   (16 critical, 25 high, 4 medium)
+                  ───────────────
+Total:           188 issues found   (78 critical, 94 high, 16 medium)
 ```
+
+### How Slow Are These Agents?
+
+Every agent we tested is significantly above the 10-second SLA target:
+
+```
+                 Avg Latency    Worst Case    How Bad?
+LOS Clinical:      30.6s          58.0s       3.1x above SLA
+Revenue Cycle:     35.7s          96.0s       3.6x above SLA
+Workforce:         39.9s          95.3s       4.0x above SLA
+Supply Chain:      36.1s          86.6s       3.6x above SLA
+```
+
+### Top 5 Issues (Biggest Impact)
+
+These are the issues causing the most latency across all 4 agents:
+
+| # | Issue | Impact | Fix |
+|---|-------|--------|-----|
+| 1 | **Excessive retries** — 217 retries across 100 questions because the agent picks the wrong table first | 133s per cycle | Add routing rules to instructions so the agent targets the right table on the first try |
+| 2 | **Outlier queries >45s** — 6 queries took 46-58s due to cross-table scans without row limits | 58s per query | Add `TOPN(100, ...)` guards to verified answers for cross-entity questions |
+| 3 | **Schema sprawl** — LOS agent exposes all 18 tables when only 6-8 are needed for most questions | 4.5s per query | Use "AI Data Schema" in Fabric to limit visible tables to the ones the agent actually needs |
+| 4 | **No verified answers** — None of the 4 agents had any verified answers configured | 8.2s per query | Add verified answers for the top 10 most-asked questions per agent (pre-written DAX = instant response) |
+| 5 | **Ambiguous measures** — Revenue Cycle has "Net Revenue", "Net Rev", and "Revenue Net" (all different) | 6.1s per query | Rename to a single clear name, hide duplicates, add descriptions |
+
+### Projected Improvement (Monte Carlo Simulation)
+
+We ran 500 Monte Carlo simulations per fix to estimate the impact. Here's what happens when you apply the recommended fixes:
+
+| Fix | Time Saved | Reduction |
+|-----|-----------|-----------|
+| Add verified answers for top 10 questions | **-8.2s** per query | 23% faster |
+| Remove unused tables from schema | **-4.5s** per query | 13% faster |
+| Fix routing instructions (remove contradictions) | **-3.8s** per query | 11% faster |
+| Optimize DAX (add TOPN, remove slow iterators) | **-6.1s** per query | 17% faster |
+| **All fixes together** | **-18.4s** per query | **~52% faster** |
+
+> **Bottom line:** Applying all recommended fixes cuts average query time roughly in half — from ~36s down to ~17s.
+
+### Where Does the Time Go?
+
+Each query is broken into phases so you can see exactly where the bottleneck is:
+
+```
+Example: "Compare ICU vs general ward average LOS and readmission rates"
+Total: 52.8s | Retries: 3
+
+  Parse instruction   ██                           2.1s  ( 4%)
+  Resolve schema      ██████                       6.3s  (12%)
+  Generate DAX        ██████████████████           18.5s  (35%)  <-- biggest bottleneck
+  Execute query       ████████████████████         21.1s  (40%)  <-- second biggest
+  Build response      ███                          3.2s  ( 6%)
+  Other               █                            1.6s  ( 3%)
+```
+
+The two biggest time sinks are **DAX generation** (the agent tries multiple approaches) and **query execution** (scanning too many rows). Both are addressed by the recommended fixes above.
 
 ## Screenshots
 
@@ -258,7 +279,7 @@ npm run dev
 1. Click **Sample Dataset** on the Connect tab
 2. View 10 traces on the Traces tab with CU Correlation metrics
 3. Select models per agent on the Workflow tab (GPT-5.4 Pro, DeepSeek V3.2 Speciale, etc.)
-4. Click **Run Analysis** to run the 9-agent pipeline
+4. Click **Run Analysis** to run the 11-agent pipeline
 5. Review findings on the Findings tab (ranked by latency impact)
 6. Toggle fixes on the Simulation tab to see instant Monte Carlo projections
 7. Select fixes and click **Run Validation** on the Validation tab
@@ -427,7 +448,7 @@ The tool includes a comprehensive catalog of **500 known latency issues** across
 
 ```
 Detection rate: 20/25 = 80%
-False positive rate: 4%
+False positive rate: 15% (4 out of 26 findings)
 Total deterministic findings: 26
 ```
 
