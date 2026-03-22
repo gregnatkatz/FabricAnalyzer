@@ -35,7 +35,7 @@ const MODEL_ENDPOINTS = {
   'gpt-5.4-pro': {
     endpoint: process.env.LLM_ENDPOINT_GPT54 || process.env.LLM_ENDPOINT,
     apiKey: process.env.LLM_API_KEY_GPT54 || process.env.LLM_API_KEY,
-    useResponsesApi: true,  // reasoning model — uses /openai/responses instead of chat completions
+    useResponsesApi: false,  // Responses API currently timing out — use Chat Completions instead
   },
   'gpt-4o': {
     endpoint: process.env.LLM_ENDPOINT_GPT4O || process.env.LLM_ENDPOINT,
@@ -226,7 +226,7 @@ app.post('/api/agent', async (req, res) => {
     // Retry logic: reasoning models get multiple attempts with escalating timeouts
     // GPT-5.4 Pro with medium reasoning effort needs 240-480s for complex pipeline prompts.
     // Reasoning models do deep thinking on large inputs — be very patient.
-    const timeouts = useResponsesApi ? [240, 360, 480] : [180];
+    const timeouts = useResponsesApi ? [30] : [180];
     let lastError = null;
     let data = null;
 
