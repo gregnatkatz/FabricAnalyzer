@@ -1,6 +1,32 @@
 # Fabric Data Agent Latency Analyzer
 
-A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces via OAuth, analyzes Data Agents using an 11-agent AI pipeline powered by GPT-5.4 Pro and DeepSeek V3.2 Speciale, runs Monte Carlo simulations (500 iterations), validates recommendations, and exports PDF reports with findings and fix artifacts.
+## Executive Summary
+
+**What it is:** A locally-installed diagnostic tool that connects to your Microsoft Fabric workspace, analyzes your Data Agents using an 11-agent AI pipeline (GPT-5.4 Pro + DeepSeek V3.2 Speciale), identifies latency bottlenecks, runs Monte Carlo simulations, and generates paste-ready fix artifacts with PDF reports.
+
+**What it isn't:** This is not a monitoring dashboard, a replacement for Fabric Capacity Metrics, or a general-purpose BI tool. It's a focused diagnostic analyzer that tells you *why* your Data Agent is slow and *exactly* how to fix it.
+
+**Why it matters:** Every Fabric Data Agent ships with default configuration. Without validation, agents accumulate anti-patterns — schema bloat, ambiguous measures, missing verified answers, poor routing instructions — that compound into 3-4x latency above SLA. This tool finds those issues before your users do.
+
+### Fabric Workspace Assets
+
+The analyzer ships with **10 real healthcare Data Agents** deployed in a Fabric workspace, each with intentionally bad configurations to test the analyzer's detection capabilities:
+
+| # | Semantic Model | Data Agent | Domain | Tables | Anti-Patterns |
+|---|---------------|------------|--------|--------|---------------|
+| 1 | LOS_Bad_Model | LOS_Bad_Agent | Clinical Inpatient | 5 tables, 800K rows | Schema sprawl, instruction bloat, no verified answers |
+| 2 | Revenue_Cycle_Model | Revenue Cycle Agent | Revenue Cycle | 7 tables, 716 rows | Ambiguous measures, full outer joins, archive table abuse |
+| 3 | Workforce_Analytics_Model | Staffing Analytics Agent | Workforce | 7 tables, 1,072 rows | Cross-joins, string date comparison, terminated staff in FTE |
+| 4 | Supply_Chain_Model | Supply Chain Agent | Supply Chain | 7 tables, 680 rows | List price vs contract price, formulary in non-drug queries |
+| 5 | ED_Throughput_Model | ED Throughput Agent | Emergency Dept | 7 tables, 1,720 rows | No date filters on large tables, SELECT *, cross-joins |
+| 6 | Readmission_Risk_Model | Readmission Risk Agent | Population Health | 6 tables, 1,540 rows | PII exposure (patient names/SSN), nested subqueries |
+| 7 | Surgical_Outcomes_Model | Surgical Outcomes Agent | Perioperative | 7 tables, 1,530 rows | Scheduled vs actual duration, overnight gap inclusion |
+| 8 | Infection_Control_Model | Infection Control Agent | Infection Prevention | 7 tables, 736 rows | Patient days vs device days denominator, LIKE patterns |
+| 9 | Nursing_Quality_Model | Nursing Quality Agent | Nursing Admin | 10 tables, 1,004 rows | Cross-join 10 tables, SELECT *, agency hours in HPPD |
+| 10 | Patient_Safety_Model | Patient Safety Agent | Quality & Safety | 8 tables, 406 rows | Near-misses as harm, draft RCAs as complete, no risk adjust |
+
+**Workspace:** `demo-katz` (`b79e8116-8374-45ed-883d-853bc561842b`)
+**Lakehouse:** `lhkatz` — 71 tables, 809,214 total rows (doubled datasets for realistic testing)
 
 ## Key Features
 
@@ -11,8 +37,8 @@ A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces
 - **Monte Carlo Simulation** — 500-iteration client-side math model with instant fix toggle projections
 - **CU Cost Correlation** — AI CU, Query CU, Throttle Events, P50/P95 latency with estimated CU savings
 - **Live Fabric Integration** — Connect via OAuth or token paste, auto-detect Data Agents and semantic models
-- **31 Test Scenarios** — Pre-built scenarios across 10+ domains (Revenue Cycle, Supply Chain, Clinical, Workforce, Financial, ED, Infection Control, Nursing, Surgical, Patient Safety, etc.) with 250-question evaluation battery across 10 core healthcare Data Agent scenarios
-- **Adaptive Question Battery** — 25-50 domain-specific questions auto-generated from semantic model schema, varied complexity (simple → very complex)
+- **10 Real Fabric Data Agents** — Healthcare scenarios deployed in Fabric workspace with real semantic models, lakehouse tables, and intentional anti-patterns for testing
+- **250-Question Evaluation Battery** — 25 domain-specific questions per agent, auto-generated from semantic model schema, varied complexity (simple → very complex)
 - **XMLA Deep Analysis** — Automatic XMLA collection via Admin Scanner API for any connected workspace (supports Direct Lake models)
 - **Microsoft Learn Integration** — Cross-references findings with curated MS Learn best practices (12 articles, 70+ practices)
 - **Scheduled Analysis** — Configure recurring analysis runs (hourly/daily/weekly) with persistent schedule management
@@ -392,6 +418,37 @@ Follow these steps to connect the analyzer to your Microsoft Fabric workspace an
 | Data Agent not responding | Verify the Data Agent is deployed and the semantic model is online |
 | Slow collection (>2 min) | Normal for large models — the battery runs 30-50 questions |
 | No traces captured | Check that the Data Agent is configured with at least one semantic model |
+
+## Fabric Workspace Recreation Scripts
+
+All scripts to recreate the Fabric workspace assets are in `scripts/`:
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/create_semantic_models.py` | Creates 9 semantic models (DirectLake mode) with tables, measures, and relationships |
+| `scripts/create_data_agents.py` | Creates 9 data agents with anti-pattern instructions and lakehouse datasources |
+| `scripts/create_lakehouse_tables_notebook.py` | PySpark notebook content — creates 66 tables with doubled sample data |
+| `scripts/create_fabric_agents.py` | Combined script for 4-agent creation (models + agents) |
+
+### Recreating Tables
+
+1. Create a new notebook in your Fabric workspace
+2. Copy the contents of `scripts/create_lakehouse_tables_notebook.py` into the notebook
+3. Attach the notebook to your lakehouse
+4. Run all cells — creates 66 tables with ~8,200 rows of realistic healthcare data
+
+### Recreating Models & Agents
+
+```bash
+# Set your Fabric token
+export FABRIC_TOKEN=$(az account get-access-token --resource https://analysis.windows.net/powerbi/api --query accessToken -o tsv)
+
+# Create semantic models
+python3 scripts/create_semantic_models.py
+
+# Create data agents
+python3 scripts/create_data_agents.py
+```
 
 ## 500 Latency Issue Catalog
 
