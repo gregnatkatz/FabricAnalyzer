@@ -705,8 +705,18 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
                                       if v.get('reduction_ms', 0) < 100],
             }
 
-    # Embed all findings in ChromaDB
-    embed_findings(chromadb_path, all_findings, session_id)
+    # Embed all findings in ChromaDB (with timeout to prevent deadlocks)
+    try:
+        import signal
+        def _timeout_handler(signum, frame):
+            raise TimeoutError('ChromaDB embed timed out')
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(15)  # 15 second timeout
+        embed_findings(chromadb_path, all_findings, session_id)
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+    except Exception as e:
+        print(f'[pipeline] ChromaDB embed skipped (timeout/error): {e}', file=sys.stderr)
 
     # Final output
     output = {
@@ -757,6 +767,8 @@ def main():
     )
 
     print(json.dumps(result))
+    sys.stdout.flush()
+    os._exit(0)
 
 
 if __name__ == '__main__':
