@@ -389,6 +389,7 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   };
 
   const [liveProgress, setLiveProgress] = useState({ current: 0, total: 0, question: '' });
+  const [liveLog, setLiveLog] = useState([]);
 
   const handleDirectCollect = async (tracesFromPortal) => {
     if (!workspaceId.trim() || !directAgentId.trim()) return;
@@ -398,8 +399,9 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
       const token = await getAccessToken().catch(() => manualTokenInput.trim());
 
       // Use live collection — sends real questions to the Data Agent /chat API
-      setStatus('Sending questions to real Data Agent — measuring actual response times...');
+      setStatus('Connecting to Data Agent...');
       setLiveProgress({ current: 0, total: 10, question: 'Starting...' });
+      setLiveLog([]);
 
       collectLive(
         {
@@ -412,20 +414,36 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
         // onProgress
         (data) => {
           if (data.type === 'start') {
-            setLiveProgress({ current: 0, total: data.total, question: 'Starting collection...' });
+            setLiveProgress({ current: 0, total: data.total, question: 'Creating assistant...' });
+            setStatus(`Starting collection - ${data.total} questions queued`);
+            setLiveLog([{ text: `Connected to ${directAgentName.trim() || 'Data Agent'} - sending ${data.total} diagnostic questions`, status: 'info' }]);
           } else if (data.type === 'progress') {
             setLiveProgress(prev => ({ ...prev, current: data.index + 1, question: data.question }));
-            setStatus(`Q${data.index + 1}/${liveProgress.total || 10}: ${data.question}`);
+            setStatus(`Q${data.index + 1}/${data.total || 10}: Asking "${data.question}"`);
+            setLiveLog(prev => [...prev, { text: `Q${data.index + 1}: Sending >> "${data.question}"`, status: 'pending' }]);
           } else if (data.type === 'building') {
-            setStatus('Building trace database from real responses...');
+            setStatus('All questions answered - building trace database...');
+            setLiveLog(prev => [...prev, { text: 'Building trace database from responses...', status: 'info' }]);
           } else if (data.type === 'retry') {
-            setStatus(`Rate limited — waiting ${data.retryAfter}s before retry...`);
+            setStatus(`Rate limited - retrying in ${data.retryAfter}s...`);
+            setLiveLog(prev => [...prev, { text: `Rate limited - waiting ${data.retryAfter}s before retry`, status: 'warn' }]);
           }
         },
         // onTrace
         (data) => {
           const t = data.trace;
-          setStatus(`Q${data.index + 1}: ${t.status === 'pass' ? 'OK' : 'FAIL'} (${(t.responseTimeMs / 1000).toFixed(1)}s) — ${t.question.substring(0, 60)}...`);
+          const latency = (t.responseTimeMs / 1000).toFixed(1);
+          const ok = t.status === 'pass';
+                    setStatus(`Q${data.index + 1}: ${ok ? 'OK' : 'FAIL'} in ${latency}s - "${t.question.substring(0, 50)}"`);
+                    setLiveLog(prev => {
+                      const updated = [...prev];
+                      // Find the pending entry for this question and update it
+                      const idx = updated.findLastIndex(e => e.status === 'pending');
+                      if (idx >= 0) {
+                        updated[idx] = { text: `Q${data.index + 1}: ${ok ? 'OK' : 'FAIL'} in ${latency}s - "${t.question.substring(0, 45)}"`, status: ok ? 'pass' : 'fail' };
+            }
+            return updated;
+          });
         },
         // onComplete
         (result) => {
@@ -1125,6 +1143,58 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
             >
               {loading ? status || 'Collecting...' : 'Analyze Data Agent'}
             </button>
+
+            {/* Live Collection Progress Log */}
+            {loading && liveLog.length > 0 && (
+              <div style={{
+                marginTop: 12,
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                padding: 12,
+                background: 'rgba(0,0,0,0.2)',
+                maxHeight: 220,
+                overflowY: 'auto',
+              }}>
+                {/* Progress bar */}
+                {liveProgress.total > 0 && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+                      <span>Progress: {liveProgress.current}/{liveProgress.total}</span>
+                      <span>{liveProgress.total > 0 ? Math.round((liveProgress.current / liveProgress.total) * 100) : 0}%</span>
+                    </div>
+                    <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2 }}>
+                      <div style={{
+                        height: '100%',
+                        width: `${(liveProgress.current / liveProgress.total) * 100}%`,
+                        background: 'var(--teal)',
+                        borderRadius: 2,
+                        transition: 'width 0.5s ease',
+                      }} />
+                    </div>
+                  </div>
+                )}
+                {liveLog.map((entry, i) => (
+                  <div key={i} style={{
+                    fontSize: 11,
+                    fontFamily: 'var(--font-mono)',
+                    padding: '3px 0',
+                    color: entry.status === 'pass' ? 'var(--green)'
+                      : entry.status === 'fail' ? 'var(--red)'
+                      : entry.status === 'warn' ? 'var(--amber)'
+                      : entry.status === 'pending' ? 'var(--teal)'
+                      : 'var(--text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}>
+                    <span style={{ flexShrink: 0, width: 14, textAlign: 'center' }}>
+                      {entry.status === 'pass' ? '\u2713' : entry.status === 'fail' ? '\u2717' : entry.status === 'pending' ? '\u25CB' : '\u2022'}
+                    </span>
+                    <span>{entry.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
               Find IDs in the Fabric URL: /groups/&lt;workspace-id&gt;/aiskills/&lt;agent-id&gt;
