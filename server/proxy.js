@@ -28,13 +28,9 @@ const PYTHON_PATH = process.env.PYTHON_PATH || 'python3';
 // Per-model endpoint configuration — supports routing different models to different Azure AI endpoints
 // If a model has its own endpoint env var, use that; otherwise fall back to default LLM_ENDPOINT
 const MODEL_ENDPOINTS = {
-  'DeepSeek-V3.2-Speciale': {
-    endpoint: process.env.LLM_ENDPOINT_DEEPSEEK || process.env.LLM_ENDPOINT,
-    apiKey: process.env.LLM_API_KEY_DEEPSEEK || process.env.LLM_API_KEY,
-  },
-  'DeepSeek-V3.2': {
-    endpoint: process.env.LLM_ENDPOINT_DEEPSEEK || process.env.LLM_ENDPOINT,
-    apiKey: process.env.LLM_API_KEY_DEEPSEEK || process.env.LLM_API_KEY,
+  'gpt-5.4': {
+    endpoint: process.env.LLM_ENDPOINT_GPT4O || process.env.LLM_ENDPOINT,
+    apiKey: process.env.LLM_API_KEY_GPT4O || process.env.LLM_API_KEY,
   },
   'gpt-5.4-pro': {
     endpoint: process.env.LLM_ENDPOINT_GPT54 || process.env.LLM_ENDPOINT,
@@ -44,6 +40,14 @@ const MODEL_ENDPOINTS = {
   'gpt-4o': {
     endpoint: process.env.LLM_ENDPOINT_GPT4O || process.env.LLM_ENDPOINT,
     apiKey: process.env.LLM_API_KEY_GPT4O || process.env.LLM_API_KEY,
+  },
+  'DeepSeek-V3.2-Speciale': {
+    endpoint: process.env.LLM_ENDPOINT_DEEPSEEK || process.env.LLM_ENDPOINT,
+    apiKey: process.env.LLM_API_KEY_DEEPSEEK || process.env.LLM_API_KEY,
+  },
+  'DeepSeek-V3.2': {
+    endpoint: process.env.LLM_ENDPOINT_DEEPSEEK || process.env.LLM_ENDPOINT,
+    apiKey: process.env.LLM_API_KEY_DEEPSEEK || process.env.LLM_API_KEY,
   },
 };
 
@@ -65,12 +69,31 @@ const LLM_AUTH_MODE = process.env.LLM_API_KEY && process.env.LLM_API_KEY !== 'pl
   ? 'api-key'
   : 'azure-ad';
 
-// Azure AD token cache for LLM auth
+// Azure AD token cache for LLM auth — supports manual token paste from user
 let azureAdToken = null;
 let azureAdTokenExpiry = 0;
 
+// Accept manually-pasted Cognitive Services token via API
+app.post('/api/llm-token', (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ error: 'Token is required' });
+  azureAdToken = token;
+  // Parse JWT expiry if possible
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+    azureAdTokenExpiry = (payload.exp || 0) * 1000;
+    const expiresIn = Math.round((azureAdTokenExpiry - Date.now()) / 60000);
+    console.log(`[server] LLM token set manually, expires in ${expiresIn} minutes`);
+    res.json({ success: true, expiresIn, authMode: 'azure-ad-manual' });
+  } catch {
+    azureAdTokenExpiry = Date.now() + 3600000; // Assume 1 hour if can't parse
+    console.log('[server] LLM token set manually (could not parse expiry)');
+    res.json({ success: true, authMode: 'azure-ad-manual' });
+  }
+});
+
 async function getAzureAdToken() {
-  // If we have a valid cached token, return it
+  // If we have a valid cached token (from manual paste or DefaultAzureCredential), return it
   if (azureAdToken && Date.now() < azureAdTokenExpiry - 60000) {
     return azureAdToken;
   }
@@ -84,7 +107,7 @@ async function getAzureAdToken() {
     return azureAdToken;
   } catch (err) {
     console.warn('[server] Azure AD auth not available:', err.message);
-    console.warn('[server] LLM agents will be disabled. Set LLM_API_KEY in .env or configure Azure AD credentials.');
+    console.warn('[server] Paste a Cognitive Services token via POST /api/llm-token or set LLM_API_KEY in .env');
     return null;
   }
 }
@@ -160,13 +183,15 @@ app.post('/api/agent', async (req, res) => {
       } else {
         llmUrl = `${endpoint.replace(/\/+$/, '')}/chat/completions`;
       }
+      // gpt-5.4 and newer models require max_completion_tokens instead of max_tokens
+      const isNewModel = model.startsWith('gpt-5') || model.startsWith('o1') || model.startsWith('o3');
       body = {
         model,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: userMsg },
         ],
-        max_tokens: maxTokens,
+        ...(isNewModel ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
         temperature: 0.2,
       };
     }
@@ -177,11 +202,25 @@ app.post('/api/agent', async (req, res) => {
     // Use Node.js native fetch for LLM calls — much better for long-running reasoning models
     // that can take 2-4 minutes for complex prompts. curl with -m kills the connection at the
     // timeout boundary, wasting all processing. fetch with AbortController is more reliable.
+    // Auth: use Azure AD token when in azure-ad mode, otherwise use API key
+    let authHeader;
+    if (LLM_AUTH_MODE === 'azure-ad') {
+      const adToken = await getAzureAdToken();
+      if (!adToken) {
+        return res.status(503).json({
+          error: 'No LLM auth available. Paste a Cognitive Services token in the Connect tab, or set LLM_API_KEY in .env.',
+          choices: [{ message: { content: 'ERROR: LLM auth not configured. Please paste a Cognitive Services token.' } }],
+        });
+      }
+      authHeader = { 'Authorization': `Bearer ${adToken}` };
+    } else {
+      authHeader = endpoint.includes('openai.azure.com')
+        ? { 'api-key': apiKey }
+        : { 'Authorization': `Bearer ${apiKey}` };
+    }
     const headers = {
       'Content-Type': 'application/json',
-      ...(endpoint.includes('openai.azure.com')
-        ? { 'api-key': apiKey }
-        : { 'Authorization': `Bearer ${apiKey}` }),
+      ...authHeader,
     };
 
     // Retry logic: reasoning models get multiple attempts with escalating timeouts
@@ -1317,6 +1356,407 @@ app.get('/api/fabric/workspaces', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/api/fabric/workspaces/:workspaceId/agents', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ error: 'No token provided' });
+
+    const response = await fetch(
+      `https://api.fabric.microsoft.com/v1/workspaces/${req.params.workspaceId}/items?type=DataAgent`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(response.status).json({ error: `Fabric API error: ${text}` });
+    }
+    const data = await response.json();
+    res.json({
+      agents: (data.value || []).map(a => ({
+        id: a.id,
+        name: a.displayName,
+        description: a.description || '',
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Real Data Agent /chat API collection — sends questions to the actual agent and measures real response times
+// Uses Server-Sent Events (SSE) to stream progress to the frontend in real-time
+app.post('/api/fabric/collect-live', async (req, res) => {
+  const { workspaceId, agentId, agentName, agentInstructions } = req.body;
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'No token provided' });
+  if (!workspaceId || !agentId) return res.status(400).json({ error: 'workspaceId and agentId are required' });
+
+  // Set up SSE for progress streaming
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  const sendEvent = (type, data) => {
+    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+  };
+
+  // Question battery — a mix of simple to complex questions for any Data Agent
+  const questions = [
+    { question: 'How many total records are in the primary dataset?', category: 'count' },
+    { question: 'What are the distinct categories or types in the data?', category: 'listing' },
+    { question: 'Show me the top 10 items by volume or count', category: 'ranking' },
+    { question: 'What is the average value across the main metric?', category: 'aggregation' },
+    { question: 'Show me a breakdown by the primary grouping dimension', category: 'aggregation' },
+    { question: 'Which items have the highest rates or percentages?', category: 'ranking' },
+    { question: 'What is the trend over the most recent time period?', category: 'trend' },
+    { question: 'Show me records that exceed a threshold or target', category: 'filtering' },
+    { question: 'Compare performance across the top 5 groups', category: 'comparison' },
+    { question: 'What patterns or outliers exist in the data?', category: 'analysis' },
+  ];
+
+  const traces = [];
+  // Use the OpenAI Assistant API pattern — this is the correct Fabric Data Agent endpoint
+  const baseUrl = `https://api.fabric.microsoft.com/v1/workspaces/${workspaceId}/dataagents/${agentId}/aiassistant/openai`;
+  const apiVersion = '2024-05-01-preview';
+  console.log(`[live-collect] Starting real collection for ${agentName} (${agentId}) — ${questions.length} questions`);
+  console.log(`[live-collect] Base URL: ${baseUrl}`);
+
+  sendEvent('start', { total: questions.length, agentName, agentId });
+
+  // Helper for Fabric Data Agent API calls
+  const agentApiCall = async (path, method = 'GET', body = null) => {
+    const sep = path.includes('?') ? '&' : '?';
+    const url = `${baseUrl}${path}${sep}api-version=${apiVersion}`;
+    const opts = {
+      method,
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    };
+    if (body) opts.body = JSON.stringify(body);
+    const resp = await fetch(url, opts);
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`${resp.status}: ${text.substring(0, 300)}`);
+    }
+    if (method === 'DELETE') return {};
+    return resp.json();
+  };
+
+  // Step 1: Create a reusable assistant instance
+  let assistantId;
+  try {
+    const assistant = await agentApiCall('/assistants', 'POST', { model: 'not used' });
+    assistantId = assistant.id;
+    console.log(`[live-collect] Assistant created: ${assistantId}`);
+  } catch (err) {
+    console.error(`[live-collect] Failed to create assistant: ${err.message}`);
+    sendEvent('error', { message: `Failed to create assistant: ${err.message}. Make sure the Fabric token has the correct scope (api.fabric.microsoft.com).` });
+    res.end();
+    return;
+  }
+
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    sendEvent('progress', { index: i, question: q.question, category: q.category });
+    console.log(`[live-collect] Q${i + 1}/${questions.length}: ${q.question}`);
+
+    const startTime = Date.now();
+    let responseText = '';
+    let status = 'fail';
+    let retries = 0;
+    let daxGenerated = '';
+    let errorMsg = '';
+    let threadId = null;
+
+    try {
+      // Step 2: Create a new thread for each question
+      const thread = await agentApiCall('/threads', 'POST', {});
+      threadId = thread.id;
+
+      // Step 3: Post the question as a message
+      await agentApiCall(`/threads/${threadId}/messages`, 'POST', {
+        role: 'user',
+        content: q.question,
+      });
+
+      // Step 4: Create a run and poll for completion (non-streaming for reliable trace collection)
+      const run = await agentApiCall(`/threads/${threadId}/runs`, 'POST', {
+        assistant_id: assistantId,
+        stream: false,
+      });
+      let runId = run.id;
+      let runStatus = run.status;
+
+      // Poll for run completion with timeout
+      // Include 'requires_action' in the loop — Fabric Data Agents handle tool execution
+      // server-side, so 'requires_action' resolves on its own without client tool submission
+      const pollTimeout = 180000; // 3 min timeout per question
+      const pollStart = Date.now();
+      while (runStatus === 'queued' || runStatus === 'in_progress' || runStatus === 'requires_action') {
+        if (Date.now() - pollStart > pollTimeout) {
+          errorMsg = 'Timeout (180s) waiting for agent response';
+          break;
+        }
+        await new Promise(r => setTimeout(r, 2000)); // Poll every 2s
+        try {
+          const runCheck = await agentApiCall(`/threads/${threadId}/runs/${runId}`, 'GET');
+          runStatus = runCheck.status;
+        } catch (pollErr) {
+          console.log(`[live-collect] Q${i + 1} poll error: ${pollErr.message}`);
+          retries++;
+          if (retries > 3) break;
+        }
+      }
+
+      if (runStatus === 'completed') {
+        // Step 5: Retrieve the assistant's response messages
+        const messagesResp = await agentApiCall(`/threads/${threadId}/messages`, 'GET');
+        const assistantMsgs = (messagesResp.data || []).filter(m => m.role === 'assistant');
+        if (assistantMsgs.length > 0) {
+          const lastMsg = assistantMsgs[assistantMsgs.length - 1];
+          responseText = lastMsg.content?.map(c => c.text?.value || '').join('\n') || '';
+          status = 'pass';
+          // Try to extract DAX from response
+          if (responseText) {
+            const daxMatch = responseText.match(/```dax\n?([\s\S]*?)```/i);
+            if (daxMatch) daxGenerated = daxMatch[1].trim().substring(0, 200);
+            else {
+              const daxInline = responseText.match(/(?:EVALUATE|DEFINE|CALCULATETABLE|SUMMARIZE|TOPN|FILTER)[^`]*/i);
+              if (daxInline) daxGenerated = daxInline[0].substring(0, 200);
+            }
+          }
+        } else {
+          errorMsg = 'No assistant response messages found';
+        }
+      } else if (runStatus === 'failed') {
+        // Get the error from the run details
+        try {
+          const runDetail = await agentApiCall(`/threads/${threadId}/runs/${runId}`, 'GET');
+          errorMsg = runDetail.last_error?.message || `Run failed with status: ${runStatus}`;
+        } catch {
+          errorMsg = `Run failed with status: ${runStatus}`;
+        }
+      } else if (!errorMsg) {
+        errorMsg = `Run ended with status: ${runStatus}`;
+      }
+
+      const elapsed = Date.now() - startTime;
+      console.log(`[live-collect] Q${i + 1} ${status === 'pass' ? 'OK' : 'FAIL'}: ${elapsed}ms — ${errorMsg || responseText.substring(0, 80)}`);
+
+      // Cleanup: delete thread to avoid resource leaks
+      try { await agentApiCall(`/threads/${threadId}`, 'DELETE'); } catch {}
+    } catch (err) {
+      errorMsg = err.message || 'Unknown error';
+      console.log(`[live-collect] Q${i + 1} error: ${errorMsg}`);
+      // Cleanup thread if created
+      if (threadId) {
+        try { await agentApiCall(`/threads/${threadId}`, 'DELETE'); } catch {}
+      }
+    }
+
+    const totalMs = Date.now() - startTime;
+    // Estimate phase breakdowns from total time
+    const bdParse = Math.round(totalMs * 0.05);
+    const bdSchema = Math.round(totalMs * 0.10);
+    const bdNldax = Math.round(totalMs * 0.35);
+    const bdExec = Math.round(totalMs * 0.40);
+    const bdSynth = totalMs - bdParse - bdSchema - bdNldax - bdExec;
+
+    const trace = {
+      question: q.question,
+      category: q.category,
+      responseTimeMs: totalMs,
+      responseTimeSec: Math.round(totalMs / 1000),
+      retries,
+      status,
+      daxGenerated,
+      response: responseText.substring(0, 300),
+      error: errorMsg,
+      tablesUsed: '',
+    };
+    traces.push(trace);
+
+    sendEvent('trace', { index: i, trace, elapsed: totalMs });
+  }
+
+  console.log(`[live-collect] Collection complete: ${traces.length} traces, ${traces.filter(t => t.status === 'pass').length} passed`);
+
+  // Now feed the real traces into the collect-direct pipeline to build the SQLite DB
+  sendEvent('building', { message: 'Building trace database...' });
+
+  // Send the traces to collect-direct internally
+  const sessionId = `live_${Date.now().toString(36)}`;
+  const dbPath = join(SQLITE_DIR, `${sessionId}.db`);
+
+  // Reuse the collect-direct python script inline
+  const buildPy = `
+import sqlite3, json, sys, uuid
+from datetime import datetime
+
+data = json.loads(sys.stdin.read())
+db = sqlite3.connect(data['dbPath'])
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS models (
+    model_id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT,
+    size_mb REAL, storage_mode TEXT, last_refresh TEXT, xmla_enabled INTEGER, scan_ts TEXT
+);
+CREATE TABLE IF NOT EXISTS tables (
+    table_id TEXT, model_id TEXT, name TEXT, row_count INTEGER,
+    col_count INTEGER, is_hidden INTEGER, partition_type TEXT, description TEXT
+);
+CREATE TABLE IF NOT EXISTS columns (
+    col_id TEXT, table_id TEXT, model_id TEXT, name TEXT,
+    data_type TEXT, cardinality INTEGER, is_hidden INTEGER
+);
+CREATE TABLE IF NOT EXISTS measures (
+    measure_id TEXT, model_id TEXT, table_id TEXT, name TEXT,
+    expression TEXT, description TEXT, is_hidden INTEGER
+);
+CREATE TABLE IF NOT EXISTS relationships (
+    rel_id TEXT, model_id TEXT, from_table TEXT, to_table TEXT,
+    rel_type TEXT, is_active INTEGER, cross_filter TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_config (
+    agent_id TEXT PRIMARY KEY, model_id TEXT, workspace_id TEXT,
+    instruction_text TEXT, instr_chars INTEGER, tables_checked INTEGER,
+    va_count INTEGER, sources_count INTEGER
+);
+CREATE TABLE IF NOT EXISTS traces (
+    trace_id TEXT PRIMARY KEY, agent_id TEXT, model_id TEXT,
+    question TEXT, category TEXT, total_ms INTEGER, retries INTEGER,
+    dax_generated TEXT, tables_used TEXT, pass_fail TEXT,
+    physician_visible INTEGER, bd_parse INTEGER, bd_schema INTEGER,
+    bd_nldax INTEGER, bd_exec INTEGER, bd_synth INTEGER,
+    bd_other INTEGER DEFAULT 0,
+    run_type TEXT, run_id TEXT
+);
+CREATE TABLE IF NOT EXISTS cu_metrics (
+    metric_id TEXT PRIMARY KEY, model_id TEXT, workspace_id TEXT,
+    ai_cu_consumed REAL, query_cu_consumed REAL, throttle_state INTEGER,
+    p50_ms INTEGER, p95_ms INTEGER, captured_at TEXT
+);
+CREATE TABLE IF NOT EXISTS findings (
+    finding_id INTEGER PRIMARY KEY AUTOINCREMENT, model_id TEXT, agent_id TEXT,
+    severity TEXT, issue TEXT, evidence TEXT, impact_ms INTEGER, fix TEXT,
+    run_at TEXT, fix_applied INTEGER DEFAULT 0, resolution_status TEXT, resolved_at TEXT
+);
+"""
+
+db.executescript(SCHEMA_SQL)
+
+model_id = data['agentId']
+workspace_id = data['workspaceId']
+agent_name = data.get('agentName', 'Unknown Agent')
+instructions = data.get('agentInstructions', '')
+now = datetime.utcnow().isoformat()
+
+db.execute('INSERT INTO models VALUES (?,?,?,?,?,?,?,?)',
+    (model_id, workspace_id, agent_name, 0, 'DirectLake', now, 1, now))
+
+agent_config_id = f'agent_{model_id[:8]}'
+db.execute('INSERT INTO agent_config VALUES (?,?,?,?,?,?,?,?)',
+    (agent_config_id, model_id, workspace_id, instructions, len(instructions), 0, 0, 0))
+
+# Compute CU metrics from traces
+trace_times = [int(t.get('responseTimeMs', t.get('responseTimeSec', 0) * 1000)) for t in data['traces'] if t.get('status') == 'pass']
+p50 = sorted(trace_times)[len(trace_times)//2] if trace_times else 0
+p95 = sorted(trace_times)[int(len(trace_times)*0.95)] if trace_times else 0
+db.execute('INSERT INTO cu_metrics VALUES (?,?,?,?,?,?,?,?,?)',
+    (f'cu_{model_id[:8]}', model_id, workspace_id, 0, 0, 0, p50, p95, now))
+
+for t in data['traces']:
+    trace_id = f'trace_{uuid.uuid4().hex[:8]}'
+    total_ms = int(t.get('responseTimeMs', t.get('responseTimeSec', 0) * 1000))
+    bd_parse = int(total_ms * 0.05)
+    bd_schema = int(total_ms * 0.10)
+    bd_nldax = int(total_ms * 0.35)
+    bd_exec = int(total_ms * 0.40)
+    bd_synth = total_ms - bd_parse - bd_schema - bd_nldax - bd_exec
+    bd_other = 0
+    db.execute('INSERT INTO traces VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (trace_id, agent_config_id, model_id,
+         t.get('question', ''), t.get('category', 'general'),
+         total_ms, t.get('retries', 0), t.get('daxGenerated', ''), t.get('tablesUsed', ''),
+         t.get('status', 'fail'),
+         0, bd_parse, bd_schema, bd_nldax, bd_exec, bd_synth, bd_other,
+         'live', data.get('sessionId', '')))
+
+db.commit()
+
+db.row_factory = sqlite3.Row
+traces_out = [dict(r) for r in db.execute('SELECT * FROM traces').fetchall()]
+db.close()
+
+il = instructions.lower()
+if 'procurement' in il or 'vendor' in il or 'inventory' in il or 'supply' in il:
+    domain = 'SUPPLY_CHAIN'
+elif 'budget' in il or 'revenue' in il or 'financial' in il:
+    domain = 'FINANCIAL'
+elif 'ed ' in il or 'emergency' in il or 'throughput' in il:
+    domain = 'ED_THROUGHPUT'
+elif 'readmission' in il or 'population' in il:
+    domain = 'READMISSION_RISK'
+elif 'surgical' in il or 'perioperative' in il or 'or utilization' in il:
+    domain = 'SURGICAL_OUTCOMES'
+elif 'infection' in il or 'hai ' in il or 'antibiotic' in il:
+    domain = 'INFECTION_CONTROL'
+elif 'nursing' in il or 'ndnqi' in il or 'falls' in il:
+    domain = 'NURSING_QUALITY'
+elif 'safety' in il or 'adverse' in il or 'sentinel' in il:
+    domain = 'PATIENT_SAFETY'
+elif 'staffing' in il or 'workforce' in il or 'overtime' in il:
+    domain = 'STAFFING_ANALYTICS'
+else:
+    domain = 'CLINICAL_INPATIENT'
+
+result = {
+    'sessionId': data['sessionId'],
+    'dbPath': data['dbPath'],
+    'modelName': agent_name,
+    'domain': domain,
+    'traces': traces_out,
+    'liveCollection': True,
+}
+print(json.dumps(result))
+`;
+
+  try {
+    const inputData = JSON.stringify({
+      sessionId, dbPath, workspaceId, agentId,
+      agentName: agentName || 'Unknown Agent',
+      agentInstructions: agentInstructions || '',
+      traces,
+    });
+
+    const pyResult = await new Promise((resolve, reject) => {
+      const py = spawn(PYTHON_PATH, ['-c', buildPy], {
+        cwd: join(__dirname, '..'),
+        env: { ...process.env, PYTHONPATH: join(__dirname, '..') },
+      });
+      let output = '';
+      let stderr = '';
+      py.stdin.write(inputData);
+      py.stdin.end();
+      py.stdout.on('data', d => output += d);
+      py.stderr.on('data', d => stderr += d);
+      py.on('close', (code) => {
+        if (code !== 0) reject(new Error(stderr || 'DB build failed'));
+        else {
+          try { resolve(JSON.parse(output)); }
+          catch (e) { reject(new Error(`Parse error: ${e.message}`)); }
+        }
+      });
+    });
+
+    sendEvent('complete', pyResult);
+  } catch (err) {
+    sendEvent('error', { message: err.message });
+  }
+
+  res.end();
 });
 
 app.get('/api/fabric/workspaces/:workspaceId/models', async (req, res) => {
