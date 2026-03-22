@@ -9,6 +9,10 @@ import { spawn, execSync } from 'child_process';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Global pipeline log buffer for real-time verbose streaming
+let pipelineLogBuffer = [];
+let pipelineRunning = false;
+
 config({ path: join(__dirname, '.env') });
 
 const app = express();
@@ -904,6 +908,10 @@ app.post('/api/analyze', (req, res) => {
     console.log('[analyze] Per-agent models:', JSON.stringify(agentModels));
   }
 
+  // Reset pipeline log buffer for this run
+  pipelineLogBuffer = [];
+  pipelineRunning = true;
+
   const py = spawn(PYTHON_PATH, args, {
     cwd: join(__dirname, '..'),
     env: { ...process.env, PYTHONPATH: join(__dirname, '..') },
@@ -912,11 +920,22 @@ app.post('/api/analyze', (req, res) => {
   let output = '';
   let stderr = '';
   py.stdout.on('data', d => output += d);
-  py.stderr.on('data', d => { stderr += d; console.error('[pipeline]', d.toString()); });
+  py.stderr.on('data', d => {
+    const text = d.toString();
+    stderr += text;
+    // Parse each line and add to live log buffer
+    text.split('\n').filter(l => l.trim()).forEach(line => {
+      pipelineLogBuffer.push({ ts: Date.now(), line: line.trim() });
+      console.error('[pipeline]', line.trim());
+    });
+  });
   py.on('close', (code) => {
+    pipelineRunning = false;
     if (code !== 0) {
+      pipelineLogBuffer.push({ ts: Date.now(), line: `[EXIT] Pipeline exited with code ${code}` });
       return res.status(500).json({ error: stderr || 'Pipeline failed', code });
     }
+    pipelineLogBuffer.push({ ts: Date.now(), line: '[EXIT] Pipeline completed successfully' });
     try {
       const result = JSON.parse(output);
       res.json(result);
@@ -924,6 +943,13 @@ app.post('/api/analyze', (req, res) => {
       res.json({ findings: [], message: output || 'Pipeline completed' });
     }
   });
+});
+
+// SSE endpoint for real-time pipeline log streaming
+app.get('/api/pipeline-log', (req, res) => {
+  const since = parseInt(req.query.since || '0', 10);
+  const events = pipelineLogBuffer.filter(e => e.ts > since);
+  res.json({ running: pipelineRunning, events, total: pipelineLogBuffer.length });
 });
 
 // Reset endpoint
