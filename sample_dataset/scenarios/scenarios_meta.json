@@ -292,5 +292,101 @@
       "ambiguous_entities"
     ],
     "db_file": "scenario_25.db"
+  },
+  {
+    "id": 26,
+    "name": "ED Throughput Analysis",
+    "domain": "Emergency Department",
+    "agent_name": "ED_Throughput_Agent",
+    "description": "ED throughput agent with timeout-prone queries on large visit tables, retry-dominant latency on triage lookups, and door-to-doc metric calculation bottlenecks.",
+    "question_count": 25,
+    "issues": [
+      "timeout_patterns",
+      "retry_dominant",
+      "schema_lookup_bottleneck",
+      "missing_descriptions",
+      "high_retries"
+    ],
+    "db_file": "scenario_26.db"
+  },
+  {
+    "id": 27,
+    "name": "Readmission Risk Analytics",
+    "domain": "Population Health",
+    "agent_name": "Readmission_Risk_Agent",
+    "description": "Readmission risk agent that exposes physician identifiers in query results, lacks PII governance controls, and has framing risk in risk score presentation.",
+    "question_count": 25,
+    "issues": [
+      "physician_visible",
+      "governance_gaps",
+      "pii_exposure",
+      "framing_risk",
+      "missing_descriptions"
+    ],
+    "db_file": "scenario_27.db"
+  },
+  {
+    "id": 28,
+    "name": "Surgical Outcomes & OR Utilization",
+    "domain": "Perioperative",
+    "agent_name": "Surgical_Outcomes_Agent",
+    "description": "Surgical outcomes agent with ambiguous time window calculations for complications, OR utilization metrics that double-count block time, and framing risk in complication rates.",
+    "question_count": 25,
+    "issues": [
+      "framing_risk",
+      "ambiguous_time_windows",
+      "double_counting",
+      "missing_topn",
+      "instruction_bloat"
+    ],
+    "db_file": "scenario_28.db"
+  },
+  {
+    "id": 29,
+    "name": "Infection Control & Prevention",
+    "domain": "Infection Prevention",
+    "agent_name": "Infection_Control_Agent",
+    "description": "Infection control agent with sparse surveillance data causing empty result sets, references to measures that do not exist in the model, and unclear HAI category mappings.",
+    "question_count": 25,
+    "issues": [
+      "empty_results",
+      "measure_not_found",
+      "sparse_data",
+      "missing_descriptions",
+      "ambiguous_entities"
+    ],
+    "db_file": "scenario_29.db"
+  },
+  {
+    "id": 30,
+    "name": "Nursing Quality Metrics",
+    "domain": "Nursing Administration",
+    "agent_name": "Nursing_Quality_Agent",
+    "description": "Nursing quality agent with hidden columns inadvertently exposed in queries, excessive measure count triggering CU throttling, and duplicate NDNQI metric definitions.",
+    "question_count": 25,
+    "issues": [
+      "hidden_columns_exposed",
+      "excessive_measures",
+      "cu_throttling",
+      "measure_ambiguity",
+      "schema_sprawl"
+    ],
+    "db_file": "scenario_30.db"
+  },
+  {
+    "id": 31,
+    "name": "Patient Safety & Event Reporting",
+    "domain": "Quality & Safety",
+    "agent_name": "Patient_Safety_Agent",
+    "description": "Patient safety agent with NL2DAX contamination from colloquial safety terms, ambiguous temporal references (fiscal vs calendar year), and event correlation challenges across disparate tables.",
+    "question_count": 25,
+    "issues": [
+      "nl2dax_contamination",
+      "ambiguous_temporal",
+      "event_correlation",
+      "instruction_contradictions",
+      "missing_topn"
+    ],
+    "db_file": "scenario_31.db"
   }
 ]

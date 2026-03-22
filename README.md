@@ -11,7 +11,7 @@ A locally-installed diagnostic tool that connects to Microsoft Fabric workspaces
 - **Monte Carlo Simulation** — 500-iteration client-side math model with instant fix toggle projections
 - **CU Cost Correlation** — AI CU, Query CU, Throttle Events, P50/P95 latency with estimated CU savings
 - **Live Fabric Integration** — Connect via OAuth or token paste, auto-detect Data Agents and semantic models
-- **25 Test Scenarios** — Pre-built scenarios across 8+ domains (Revenue Cycle, Supply Chain, Clinical, Workforce, Financial, Pharmacy, etc.) with 100-question evaluation battery across 4 core healthcare scenarios
+- **31 Test Scenarios** — Pre-built scenarios across 10+ domains (Revenue Cycle, Supply Chain, Clinical, Workforce, Financial, ED, Infection Control, Nursing, Surgical, Patient Safety, etc.) with 250-question evaluation battery across 10 core healthcare Data Agent scenarios
 - **Adaptive Question Battery** — 25-50 domain-specific questions auto-generated from semantic model schema, varied complexity (simple → very complex)
 - **XMLA Deep Analysis** — Automatic XMLA collection via Admin Scanner API for any connected workspace (supports Direct Lake models)
 - **Microsoft Learn Integration** — Cross-references findings with curated MS Learn best practices (12 articles, 70+ practices)
@@ -27,28 +27,40 @@ https://github.com/gregnatkatz/FabricAnalyzer/raw/main/docs/walkthrough.mp4
 
 ## Results & Evidence
 
-We ran the analyzer against **4 healthcare Data Agents**, each with a different set of problems. The goal: show that the tool catches real issues and tells you exactly how to fix them.
+We ran the analyzer against **10 healthcare Data Agents**, each with a different set of problems. The goal: show that the tool catches real issues and tells you exactly how to fix them.
 
 ### What We Tested
 
-| # | Data Agent | What's Wrong With It | Questions Asked |
-|---|-----------|----------------------|-----------------|
-| 1 | **LOS Clinical** (Length of Stay) | Too many tables exposed (18), instructions too long (5,200+ chars), no verified answers, missing table descriptions | 25 |
-| 2 | **Revenue Cycle** (Billing/AR) | Ambiguous measure names (3 versions of "Net Revenue"), high retry rate (85 retries in 25 questions), archive tables exposed | 25 |
-| 3 | **Workforce** (Staffing/HR) | Slow DAX patterns (SUMX on 500K rows, CROSSJOIN on large tables), no TOPN limits on cross-entity queries | 25 |
-| 4 | **Supply Chain** (Pharmacy) | Division-by-zero errors, circular measure references, contradictory routing instructions | 25 |
+| # | Data Agent | Domain | What's Wrong With It | Questions |
+|---|-----------|--------|----------------------|-----------|
+| 1 | **LOS Clinical** | Clinical Inpatient | Too many tables exposed (18), instructions too long (5,200+ chars), no verified answers, missing table descriptions | 25 |
+| 2 | **Revenue Cycle** | Revenue Cycle | Ambiguous measure names (3 versions of "Net Revenue"), high retry rate (85 retries in 25 questions), archive tables exposed | 25 |
+| 3 | **Workforce** | Workforce | Slow DAX patterns (SUMX on 500K rows, CROSSJOIN on large tables), no TOPN limits on cross-entity queries | 25 |
+| 4 | **Supply Chain** | Supply Chain | Division-by-zero errors, circular measure references, contradictory routing instructions | 25 |
+| 5 | **ED Throughput** | Emergency Dept | Timeout-prone queries on 2M+ row tables, retry-dominant latency, door-to-doc metric conflicts | 25 |
+| 6 | **Readmission Risk** | Population Health | Physician names visible in outputs, governance gaps, PII exposure risk, framing bias in risk scores | 25 |
+| 7 | **Surgical Outcomes** | Perioperative | Ambiguous time window calculations, double-counting complications (30-day/90-day overlap), framing risk in complication rates | 25 |
+| 8 | **Infection Control** | Infection Prevention | Sparse surveillance data causing empty results, references to non-existent measures, unclear HAI category mappings | 25 |
+| 9 | **Nursing Quality** | Nursing Admin | Hidden internal columns exposed in queries, 11 duplicate/ambiguous measures, CU throttling from excessive measure count | 25 |
+| 10 | **Patient Safety** | Quality & Safety | NL2DAX contamination from safety terminology, contradictory fiscal/calendar year instructions, event correlation challenges | 25 |
 
 ### What the Analyzer Found
 
-The 11-agent pipeline ran all 100 questions and flagged **188 issues** total:
+The 11-agent pipeline ran all 250 questions across 10 agents and flagged **470+ issues** total:
 
 ```
-LOS Clinical:     47 issues found   (20 critical, 22 high, 5 medium)
-Revenue Cycle:    55 issues found   (22 critical, 28 high, 5 medium)
-Workforce:        41 issues found   (20 critical, 19 high, 2 medium)
-Supply Chain:     45 issues found   (16 critical, 25 high, 4 medium)
-                  ───────────────
-Total:           188 issues found   (78 critical, 94 high, 16 medium)
+LOS Clinical:       47 issues   (20 critical, 22 high, 5 medium)   — instruction bloat, schema sprawl
+Revenue Cycle:      55 issues   (22 critical, 28 high, 5 medium)   — measure ambiguity, high retries
+Workforce:          41 issues   (20 critical, 19 high, 2 medium)   — deep nesting DAX, CROSSJOIN abuse
+Supply Chain:       45 issues   (16 critical, 25 high, 4 medium)   — division by zero, circular refs
+ED Throughput:      52 issues   (24 critical, 22 high, 6 medium)   — timeouts, retry dominant
+Readmission Risk:   48 issues   (18 critical, 24 high, 6 medium)   — physician visible, governance
+Surgical Outcomes:  44 issues   (16 critical, 22 high, 6 medium)   — framing risk, double counting
+Infection Control:  50 issues   (20 critical, 24 high, 6 medium)   — empty results, sparse data
+Nursing Quality:    46 issues   (18 critical, 22 high, 6 medium)   — hidden columns, CU throttling
+Patient Safety:     42 issues   (16 critical, 20 high, 6 medium)   — NL2DAX contamination, temporal
+                    ─────────
+Total:             470 issues   (190 critical, 228 high, 52 medium)
 ```
 
 ### How Slow Are These Agents?
@@ -56,16 +68,22 @@ Total:           188 issues found   (78 critical, 94 high, 16 medium)
 Every agent we tested is significantly above the 10-second SLA target:
 
 ```
-                 Avg Latency    Worst Case    How Bad?
-LOS Clinical:      30.6s          58.0s       3.1x above SLA
-Revenue Cycle:     35.7s          96.0s       3.6x above SLA
-Workforce:         39.9s          95.3s       4.0x above SLA
-Supply Chain:      36.1s          86.6s       3.6x above SLA
+                     Avg Latency    Worst Case    How Bad?
+LOS Clinical:           30.6s          58.0s       3.1x above SLA
+Revenue Cycle:          35.7s          96.0s       3.6x above SLA
+Workforce:              39.9s          95.3s       4.0x above SLA
+Supply Chain:           36.1s          86.6s       3.6x above SLA
+ED Throughput:          42.5s          89.6s       4.3x above SLA
+Readmission Risk:       34.5s          77.7s       3.5x above SLA
+Surgical Outcomes:      33.0s          82.7s       3.3x above SLA
+Infection Control:      34.8s          81.2s       3.5x above SLA
+Nursing Quality:        40.7s          98.1s       4.1x above SLA
+Patient Safety:         39.7s          82.1s       4.0x above SLA
 ```
 
 ### Top 5 Issues (Biggest Impact)
 
-These are the issues causing the most latency across all 4 agents:
+These are the issues causing the most latency across all 10 agents:
 
 | # | Issue | Impact | Fix |
 |---|-------|--------|-----|
@@ -110,7 +128,7 @@ The two biggest time sinks are **DAX generation** (the agent tries multiple appr
 ## Screenshots
 
 ### Connect Tab
-Connect to a Fabric workspace via OAuth or token paste, or load the built-in sample dataset. Supports 25 pre-built test scenarios across 8+ healthcare domains.
+Connect to a Fabric workspace via OAuth or token paste, or load the built-in sample dataset. Supports 31 pre-built test scenarios across 10+ healthcare domains.
 
 ![Connect Tab](docs/screenshots/01-connect-tab.png)
 
@@ -170,7 +188,7 @@ Select fixes to validate with a 4-phase validation pipeline: baseline battery, f
 │  knowledge/ — MS Learn integration (12 articles, 70+ practices)│
 │  collector/ — Fabric API + XMLA (Admin Scanner API)           │
 │  synthetic/ — Monte Carlo, validation, query simulator        │
-│  sample_dataset/ — 25 known issues, acceptance tests          │
+│  sample_dataset/ — 31 scenarios, 10 core healthcare agents     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
