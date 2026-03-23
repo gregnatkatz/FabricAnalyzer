@@ -223,6 +223,50 @@ export async function clearHistory() {
   return request('/history', { method: 'DELETE' });
 }
 
+// Parallel multi-agent collection — splits questions across agents, runs concurrently
+export function collectParallel(payload, accessToken, onProgress, onTrace, onComplete, onError) {
+  const API_BASE = '/api';
+  const controller = new AbortController();
+
+  fetch(`${API_BASE}/fabric/collect-parallel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+    body: JSON.stringify(payload),
+    signal: controller.signal,
+  }).then(async (response) => {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.substring(6));
+            if (data.type === 'progress') onProgress?.(data);
+            else if (data.type === 'trace') onTrace?.(data);
+            else if (data.type === 'complete') onComplete?.(data);
+            else if (data.type === 'error') onError?.(new Error(data.message));
+            else if (data.type === 'start') onProgress?.(data);
+            else if (data.type === 'status') onProgress?.(data);
+            else if (data.type === 'building') onProgress?.(data);
+          } catch {}
+        }
+      }
+    }
+  }).catch((err) => {
+    if (err.name !== 'AbortError') onError?.(err);
+  });
+
+  return controller;
+}
+
 // SSE stream for validation progress
 export function startValidation(sessionId, fixes, onProgress, onComplete, onError) {
   const params = new URLSearchParams({ sessionId, fixes: fixes.join(',') });

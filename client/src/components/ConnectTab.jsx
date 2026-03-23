@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { loginPopup, logout, getAccessToken, setClientConfig, getClientConfig, setManualToken } from '../auth/msalConfig';
-import { loadSampleDataset, getWorkspaces, getModels, getAgents, collectData, collectDataDirect, collectLive, setLlmToken, collectXmla, getScenarios, loadScenario, healthCheck } from '../api/proxy';
+import { loadSampleDataset, getWorkspaces, getModels, getAgents, collectData, collectDataDirect, collectLive, collectParallel, setLlmToken, collectXmla, getScenarios, loadScenario, healthCheck } from '../api/proxy';
 
 // Comprehensive setup checklist for Fabric Data Agent testing
 const SETUP_STEPS = [
@@ -390,6 +390,83 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
 
   const [liveProgress, setLiveProgress] = useState({ current: 0, total: 0, question: '' });
   const [liveLog, setLiveLog] = useState([]);
+
+  // ── Parallel Multi-Agent Collection ──
+  const handleParallelCollect = async () => {
+    if (!workspaceId.trim() || agents.length === 0) return;
+    try {
+      setLoading(true);
+      setError('');
+      const token = await getAccessToken().catch(() => manualTokenInput.trim());
+      const qPerAgent = Math.max(5, Math.ceil(50 / agents.length));
+      const totalQ = qPerAgent * agents.length;
+      setStatus(`Parallel collection: ${agents.length} agents × ${qPerAgent} questions = ${totalQ} total`);
+      setLiveProgress({ current: 0, total: totalQ, question: 'Starting parallel collection...' });
+      setLiveLog([{ text: `Parallel collection: ${agents.length} agents × ${qPerAgent} questions each`, status: 'info' }]);
+
+      collectParallel(
+        {
+          workspaceId: workspaceId.trim(),
+          agents: agents.map(a => ({ agentId: a.id, agentName: a.name, agentInstructions: a.description || '' })),
+          questionsPerAgent: qPerAgent,
+        },
+        token,
+        // onProgress
+        (data) => {
+          if (data.type === 'start') {
+            setLiveProgress({ current: 0, total: data.total, question: `${data.agents?.length || agents.length} agents running in parallel...` });
+            setLiveLog(prev => [...prev, { text: `Started ${data.agents?.length || agents.length} agents in parallel`, status: 'info' }]);
+          } else if (data.type === 'progress') {
+            setLiveProgress(prev => ({ ...prev, current: data.completed || prev.current + 1, question: `[${data.agentName}] ${data.question || ''}` }));
+            const icon = data.status === 'pass' ? 'OK' : data.status === 'fail' ? 'FAIL' : '';
+            const latency = data.elapsed ? ` in ${(data.elapsed / 1000).toFixed(1)}s` : '';
+            setStatus(`[${data.completed}/${data.total}] ${data.agentName}: ${icon}${latency}`);
+            setLiveLog(prev => [...prev, {
+              text: `[${data.agentName}] Q${data.completed}: ${icon}${latency} — "${(data.question || '').substring(0, 40)}"`,
+              status: data.status === 'pass' ? 'pass' : data.status === 'fail' ? 'fail' : 'pending',
+            }]);
+          } else if (data.type === 'status') {
+            setStatus(data.message || '');
+            setLiveLog(prev => [...prev, { text: data.message || '', status: 'info' }]);
+          } else if (data.type === 'building') {
+            setStatus('All agents done — building aggregated trace database...');
+            setLiveLog(prev => [...prev, { text: 'Building aggregated trace database...', status: 'info' }]);
+          }
+        },
+        // onTrace (individual trace)
+        (data) => {},
+        // onComplete
+        (result) => {
+          updateSession({
+            connected: true,
+            sessionId: result.sessionId,
+            dbPath: result.dbPath,
+            modelId: 'multi-agent',
+            modelName: result.modelName || `Multi-Agent Parallel (${agents.length} agents)`,
+            domain: result.domain || 'MULTI_AGENT',
+            traces: result.traces || [],
+            collectionComplete: true,
+            workspaceId: workspaceId.trim(),
+            liveCollection: true,
+            parallelCollection: true,
+          });
+          const totalSec = result.totalTimeMs ? (result.totalTimeMs / 1000).toFixed(0) : '?';
+          setStatus(`Parallel collection complete — ${(result.traces || []).length} traces from ${agents.length} agents in ${totalSec}s`);
+          setLoading(false);
+          setLiveProgress({ current: 0, total: 0, question: '' });
+          onNavigate('traces');
+        },
+        // onError
+        (err) => {
+          setError(`Parallel collection failed: ${err.message}`);
+          setLoading(false);
+        },
+      );
+    } catch (err) {
+      setError(`Parallel collection failed: ${err.message}`);
+      setLoading(false);
+    }
+  };
 
   const handleDirectCollect = async (tracesFromPortal) => {
     if (!workspaceId.trim() || !directAgentId.trim()) return;
@@ -1143,6 +1220,24 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
             >
               {loading ? status || 'Collecting...' : 'Analyze Data Agent'}
             </button>
+
+            {/* Parallel Collection Button — shows when agents are loaded */}
+            {agents.length >= 2 && (
+              <button
+                className="btn-primary"
+                onClick={handleParallelCollect}
+                disabled={loading || !workspaceId.trim()}
+                style={{
+                  width: '100%',
+                  justifyContent: 'center',
+                  marginTop: 8,
+                  background: loading ? undefined : 'linear-gradient(135deg, var(--teal), #6366f1)',
+                  opacity: loading ? 0.5 : 1,
+                }}
+              >
+                {loading ? status || 'Running...' : `Parallel Collection — All ${agents.length} Agents (${Math.max(5, Math.ceil(50 / agents.length))}q each, ~1 min)`}
+              </button>
+            )}
 
             {/* Live Collection Progress Log */}
             {loading && liveLog.length > 0 && (
