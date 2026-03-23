@@ -228,17 +228,21 @@ ChromaDB query: `"DAX measure expression anti-patterns CALCULATE iterator USEREL
 **Type**: Deterministic rules only
 **Purpose**: Analyze XMLA metadata (storage modes, partitions, Direct Lake configuration) for execution-layer issues.
 
-### 6 Deterministic Rules
+### 7 Deterministic Rules
 
 Requires XMLA collection to have run first. If no XMLA data is available, the agent returns zero findings.
 
-Rules check for:
-- Direct Lake storage mode configuration
-- Partition strategy issues
-- V-Order optimization status
-- Table compression analysis
-- Relationship cardinality warnings
-- Large table row count thresholds
+| # | Rule | Threshold | Severity | Impact |
+|---|------|-----------|----------|--------|
+| XM-1 | High cardinality column | >1,000,000 distinct | HIGH | cardinality/100K * 100ms |
+| XM-2 | Large column storage | >50 MB | HIGH | size_mb * 20ms |
+| XM-3 | Bidirectional cross-filter | BothDirections | HIGH | 1500ms |
+| XM-4 | Excessive inactive relationships | >2 inactive | MEDIUM | count * 100ms |
+| XM-5 | High segment count | >10 segments | MEDIUM | segments * 50ms |
+| XM-6 | Many-to-many relationship | both sides >1 | CRITICAL | 3000ms |
+| XM-7 | Orphaned column (0 refs) | reference_count == 0 | HIGH/MEDIUM | size_mb * 15ms (min 200ms) |
+
+**XM-7 details:** Uses `INFO.CALCDEPENDENCY()` DMV to count measure references per column. Columns with `reference_count = 0` are flagged as orphaned. Key-like columns (names containing id, key, pk, fk, code, guid, uuid) are downgraded to MEDIUM severity since they may be relationship join keys not captured by CALCDEPENDENCY. Columns where `reference_count = -1` (data unavailable) are skipped.
 
 ---
 
@@ -459,7 +463,7 @@ Total pipeline time: ~3-5 minutes with live models. Agents 3-7 run in parallel, 
 | Agent | Default Model | Fallback |
 |-------|--------------|----------|
 | Domain Intelligence | gpt-5.4 | DeepSeek-V3.2-Speciale |
-| Schema, DAX, DAX Expression, Execution | DeepSeek-V3.2-Speciale | -- |
+| Schema, DAX, DAX Expression, XMLA, Execution | DeepSeek-V3.2-Speciale | -- |
 | Synthesis, Remediation | gpt-5.4 | DeepSeek-V3.2-Speciale |
 | Monte Carlo | deterministic (no LLM) | -- |
 | Finding Validator, Report Validator | gpt-5.4 | DeepSeek-V3.2-Speciale |
