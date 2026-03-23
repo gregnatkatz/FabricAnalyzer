@@ -402,6 +402,8 @@ Follow these steps to connect the analyzer to your Microsoft Fabric workspace an
 | Sign-in popup blocked | Allow popups for localhost:5173 in your browser settings |
 | "AADSTS65001" consent error | Ask your Azure AD admin to grant consent, or use a test tenant |
 | Data Agent not responding | Verify the Data Agent is deployed and the semantic model is online |
+| Chat API returns 404 | The Data Agent is not published. Open it in the Fabric portal and click **Publish**. The scan panel on the Connect tab shows publish status for all agents. |
+| No agents published | All agents in the workspace are unpublished. Open each agent in the Fabric portal → click Publish. The analyzer's agent scan will show `NOT PUBLISHED` with a hint for each. |
 | Slow collection (>2 min) | Normal for large models — the battery runs 30-50 questions |
 | No traces captured | Check that the Data Agent is configured with at least one semantic model |
 
@@ -539,6 +541,8 @@ Total deterministic findings: 26
 | `/api/fabric/workspaces` | GET | List Fabric workspaces (requires OAuth token) |
 | `/api/fabric/models` | GET | List semantic models in workspace |
 | `/api/fabric/collect` | POST | Collect data from Fabric Data Agent |
+| `/api/fabric/scan-agents` | GET | Scan all agents in workspace — returns publish status for each |
+| `/api/fabric/apply-fixes` | POST | Apply remediation fixes to a Data Agent (dry run or live) |
 
 ## Environment Variables
 

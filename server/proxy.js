@@ -1423,6 +1423,83 @@ app.post('/api/pdf', async (req, res) => {
 });
 
 // Fabric API proxy endpoints
+
+// Scan all agents in workspace — returns publish status for each
+app.get('/api/fabric/scan-agents', async (req, res) => {
+  const { workspaceId, token } = req.query;
+  if (!workspaceId || !token) {
+    return res.status(400).json({ error: 'workspaceId and token required' });
+  }
+  try {
+    const { spawn } = require('child_process');
+    const py = spawn('python3', ['-c', `
+import sys, json
+sys.path.insert(0, '.')
+from collector.fabric_collector import scan_agents
+print(json.dumps(scan_agents('${workspaceId}', '${token}')))
+`], { cwd: process.env.PYTHON_BACKEND_DIR || path.resolve(__dirname, '..') });
+    let out = '';
+    let err = '';
+    py.stdout.on('data', d => { out += d.toString(); });
+    py.stderr.on('data', d => { err += d.toString(); });
+    py.on('close', code => {
+      if (err) console.error('[scan-agents]', err);
+      if (code === 0) { try { res.json(JSON.parse(out)); } catch { res.json([]); } }
+      else { res.status(500).json({ error: 'scan_agents failed' }); }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Apply fixes to a Data Agent via Fabric REST API
+app.post('/api/fabric/apply-fixes', async (req, res) => {
+  const { workspaceId, artifactId, token,
+          remediationOutput, dryRun = true } = req.body;
+  if (!workspaceId || !artifactId || !token) {
+    return res.status(400).json({
+      error: 'workspaceId, artifactId, and token are required'
+    });
+  }
+  try {
+    const { spawn } = require('child_process');
+    const input = JSON.stringify({
+      workspace_id: workspaceId,
+      artifact_id: artifactId,
+      token,
+      remediation_output: remediationOutput,
+      dry_run: dryRun,
+    });
+    const py = spawn('python3', ['-c', `
+import sys, json
+sys.path.insert(0, '.')
+from collector.fix_applicator import apply_all_fixes
+data = json.loads(sys.stdin.read())
+result = apply_all_fixes(
+    data['workspace_id'], data['artifact_id'], data['token'],
+    data['remediation_output'], data.get('dry_run', True)
+)
+print(json.dumps(result))
+`], { cwd: process.env.PYTHON_BACKEND_DIR || path.resolve(__dirname, '..') });
+    let out = '', err = '';
+    py.stdin.write(input);
+    py.stdin.end();
+    py.stdout.on('data', d => { out += d.toString(); });
+    py.stderr.on('data', d => { err += d.toString(); });
+    py.on('close', code => {
+      if (err) console.error('[apply-fixes]', err);
+      if (code === 0) {
+        try { res.json(JSON.parse(out)); }
+        catch { res.json({ raw: out }); }
+      } else {
+        res.status(500).json({ error: err || 'fix_applicator failed' });
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/fabric/workspaces', async (req, res) => {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');

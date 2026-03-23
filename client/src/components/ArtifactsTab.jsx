@@ -1,11 +1,15 @@
 import React, { useState, useMemo } from 'react';
-import { exportPdf } from '../api/proxy';
+import { exportPdf, applyFixes } from '../api/proxy';
+import { getAccessToken } from '../auth/msalConfig';
 
 export default function ArtifactsTab({ session }) {
   const [exporting, setExporting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [previewHtml, setPreviewHtml] = useState(null);
   const [error, setError] = useState('');
+  const [dryRunResult, setDryRunResult] = useState(null);
+  const [applyResult, setApplyResult] = useState(null);
+  const [applying, setApplying] = useState(false);
 
   const agentResults = session.agentResults || [];
   const remediationResult = agentResults.find(r => r.agentId === 'remediation');
@@ -52,6 +56,59 @@ export default function ArtifactsTab({ session }) {
       dax_examples: rawArtifacts.dax_examples || null,
     };
   }, [rawArtifacts, findings, session.modelName]);
+
+  const handleDryRun = async () => {
+    setApplying(true);
+    setError('');
+    setDryRunResult(null);
+    try {
+      // Request write scope token
+      let token;
+      try {
+        token = await getAccessToken(['https://api.fabric.microsoft.com/Item.ReadWrite.All']);
+      } catch {
+        token = await getAccessToken();
+      }
+      const result = await applyFixes({
+        workspaceId: session.workspaceId,
+        artifactId: session.modelId || session.agentId,
+        token,
+        remediationOutput: artifacts,
+        dryRun: true,
+      });
+      setDryRunResult(result);
+    } catch (err) {
+      setError(`Preview failed: ${err.message}`);
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const handleApplyLive = async () => {
+    setApplying(true);
+    setError('');
+    setApplyResult(null);
+    try {
+      let token;
+      try {
+        token = await getAccessToken(['https://api.fabric.microsoft.com/Item.ReadWrite.All']);
+      } catch {
+        token = await getAccessToken();
+      }
+      const result = await applyFixes({
+        workspaceId: session.workspaceId,
+        artifactId: session.modelId || session.agentId,
+        token,
+        remediationOutput: artifacts,
+        dryRun: false,
+      });
+      setApplyResult(result);
+    } catch (err) {
+      setError(`Apply failed: ${err.message}`);
+    } finally {
+      setApplying(false);
+    }
+  };
 
   const handlePreview = async () => {
     setPreviewing(true);
@@ -335,6 +392,94 @@ export default function ArtifactsTab({ session }) {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Apply Fixes to Fabric */}
+      {session.workspaceId && (session.modelId || session.agentId) && (
+        <div className="glass" style={{ padding: 20, marginTop: 16 }}>
+          <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Apply Fixes to Fabric Data Agent</h4>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+            Preview changes before applying, or apply fixes directly to the agent definition in Fabric.
+            Requires <code style={{ color: 'var(--amber)' }}>Item.ReadWrite.All</code> scope.
+          </p>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
+            <button
+              className="btn-secondary"
+              onClick={handleDryRun}
+              disabled={applying}
+              style={{ fontSize: 12 }}
+            >
+              {applying && !applyResult ? 'Previewing...' : 'Preview Changes (Dry Run)'}
+            </button>
+            <button
+              className="btn-primary"
+              onClick={handleApplyLive}
+              disabled={applying}
+              style={{
+                fontSize: 12,
+                background: applying ? undefined : 'linear-gradient(135deg, #f59e0b, var(--red))',
+              }}
+            >
+              {applying && !dryRunResult ? 'Applying...' : 'Apply Fixes to Fabric'}
+            </button>
+          </div>
+
+          {/* Dry Run Result */}
+          {dryRunResult && (
+            <div style={{
+              padding: 12, borderRadius: 8, marginBottom: 10,
+              border: '1px solid rgba(0,232,202,0.3)',
+              background: 'rgba(0,232,202,0.05)',
+            }}>
+              <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--teal)', marginBottom: 8 }}>
+                Preview Summary
+              </p>
+              <p style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4 }}>
+                {dryRunResult.summary}
+              </p>
+              {dryRunResult.instructions && (
+                <p style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  Instructions: {dryRunResult.instructions.char_count} chars
+                  {dryRunResult.instructions.truncated && ' (truncated to 3800)'}
+                </p>
+              )}
+              {dryRunResult.verified_answers && (
+                <p style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  Verified Answers: {dryRunResult.verified_answers.count} to add
+                </p>
+              )}
+              {dryRunResult.schema_scope && (
+                <p style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  Schema: {dryRunResult.schema_scope.exclude_count} tables to exclude
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Apply Result */}
+          {applyResult && (
+            <div style={{
+              padding: 12, borderRadius: 8,
+              border: `1px solid ${applyResult.success ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
+              background: applyResult.success ? 'rgba(34,197,94,0.05)' : 'rgba(239,68,68,0.05)',
+            }}>
+              <p style={{
+                fontSize: 13, fontWeight: 600, marginBottom: 8,
+                color: applyResult.success ? 'var(--green)' : 'var(--red)',
+              }}>
+                {applyResult.success ? 'Fixes Applied Successfully' : 'Apply Failed'}
+              </p>
+              <p style={{ fontSize: 12, color: 'var(--text)' }}>{applyResult.summary}</p>
+              {applyResult.errors?.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  {applyResult.errors.map((e, i) => (
+                    <p key={i} style={{ fontSize: 11, color: 'var(--red)' }}>{e}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
