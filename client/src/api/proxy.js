@@ -230,7 +230,7 @@ export function startValidation(sessionId, fixes, onProgress, onComplete, onErro
 
   eventSource.onmessage = (event) => {
     const data = JSON.parse(event.data);
-    if (data.type === 'progress') {
+    if (data.type === 'progress' || data.type === 'phase') {
       onProgress(data);
     } else if (data.type === 'complete') {
       onComplete(data);

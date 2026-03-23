@@ -5,8 +5,10 @@ import { startValidation } from '../api/proxy';
 const STATES = { LOCKED: 'LOCKED', READY: 'READY', RUNNING: 'RUNNING', COMPLETE: 'COMPLETE', STALE: 'STALE' };
 
 export default function ValidationTab({ session, updateSession }) {
-  const [selectedFixes, setSelectedFixes] = useState([]);
+  // Auto-select all fixes by default
+  const [selectedFixes, setSelectedFixes] = useState(() => FIX_KEYS.filter(k => k !== 'physician_gov'));
   const [progress, setProgress] = useState(null);
+  const [validationError, setValidationError] = useState(null);
   const [validationState, setValidationState] = useState(
     !session.collectionComplete ? STATES.LOCKED
       : session.validationComplete ? STATES.COMPLETE
@@ -25,15 +27,32 @@ export default function ValidationTab({ session, updateSession }) {
     setValidationState(STATES.RUNNING);
     setProgress({ current: 0, total: 20, phase: 'baseline' });
 
+    setValidationError(null);
     startValidation(
       session.sessionId,
       selectedFixes,
       (data) => {
-        setProgress({ current: data.question || 0, total: 20, phase: data.phase || 'running' });
+        // Handle both 'progress' and 'phase' event types from fix_applicator.py
+        const phaseName = data.name || data.phase || 'running';
+        const phaseNum = data.phase || 0;
+        setProgress({ current: phaseNum, total: 4, phase: phaseName });
       },
       (data) => {
+        // Map fix_applicator.py output to UI expected format
+        const mapped = {
+          baseline_avg_ms: data.baseline_avg || 0,
+          postfix_avg_ms: data.postfix_avg || 0,
+          reduction_pct: data.reduction_pct || 0,
+          questions: (data.per_question || []).map(q => ({
+            question: q.question || '',
+            baseline_ms: q.baseline_ms || q.before || 0,
+            postfix_ms: q.postfix_ms || q.after || 0,
+            delta_ms: (q.baseline_ms || q.before || 0) - (q.postfix_ms || q.after || 0),
+          })),
+          resolutions: data.resolutions || [],
+        };
         updateSession({
-          validationResults: data.results,
+          validationResults: mapped,
           validationComplete: true,
         });
         setValidationState(STATES.COMPLETE);
@@ -41,6 +60,7 @@ export default function ValidationTab({ session, updateSession }) {
       },
       (err) => {
         console.error('Validation error:', err);
+        setValidationError(err?.message || 'Validation failed — check server logs');
         setValidationState(STATES.READY);
         setProgress(null);
       }
@@ -175,6 +195,12 @@ export default function ValidationTab({ session, updateSession }) {
             </div>
           )}
         </>
+      )}
+
+      {validationError && (
+        <div className="glass" style={{ padding: 16, marginTop: 16, border: '1px solid var(--red)', background: 'rgba(239, 68, 68, 0.05)' }}>
+          <p style={{ color: 'var(--red)', fontSize: 13 }}>{validationError}</p>
+        </div>
       )}
     </div>
   );

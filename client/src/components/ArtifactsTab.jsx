@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { exportPdf } from '../api/proxy';
 
 export default function ArtifactsTab({ session }) {
@@ -7,7 +7,49 @@ export default function ArtifactsTab({ session }) {
 
   const agentResults = session.agentResults || [];
   const remediationResult = agentResults.find(r => r.agentId === 'remediation');
-  const artifacts = remediationResult?.artifacts || {};
+  const rawArtifacts = remediationResult?.artifacts || {};
+  const findings = session.findings || [];
+
+  // Generate artifacts from findings data when remediation artifacts are empty
+  const artifacts = useMemo(() => {
+    if (rawArtifacts.optimized_instructions || rawArtifacts.action_cards?.length) {
+      return rawArtifacts;
+    }
+    if (findings.length === 0) return {};
+
+    const sorted = [...findings].sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0));
+    const actionCards = sorted.slice(0, 5).map((f, i) => ({
+      title: f.issue || `Finding ${i + 1}`,
+      description: f.fix || f.evidence || 'Review and remediate this finding',
+      effort: f.severity === 'CRITICAL' ? 'High' : f.severity === 'HIGH' ? 'Medium' : 'Low',
+      owner: 'Data Agent Admin',
+      reduction: f.impact_ms ? `${(f.impact_ms / 1000).toFixed(1)}s` : null,
+    }));
+
+    const fixRecs = findings
+      .filter(f => f.fix)
+      .map(f => `- [${f.severity}] ${f.fix}`)
+      .slice(0, 15);
+    const optimizedInstructions = fixRecs.length > 0
+      ? `# Recommended Optimizations for ${session.modelName || 'Data Agent'}\n# Generated from ${findings.length} findings\n\n${fixRecs.join('\n')}`
+      : null;
+
+    const tableRefs = new Set();
+    findings.forEach(f => {
+      const evidence = (f.evidence || '') + ' ' + (f.issue || '');
+      const tableMatches = evidence.match(/\b(Dim\w+|Fact\w+|[A-Z][a-z]+[A-Z]\w+)\b/g);
+      if (tableMatches) tableMatches.forEach(t => tableRefs.add(t));
+    });
+    const schemaScope = tableRefs.size > 0 ? [...tableRefs] : null;
+
+    return {
+      optimized_instructions: optimizedInstructions,
+      action_cards: actionCards,
+      schema_scope: schemaScope,
+      verified_answers: rawArtifacts.verified_answers || null,
+      dax_examples: rawArtifacts.dax_examples || null,
+    };
+  }, [rawArtifacts, findings, session.modelName]);
 
   const handleExportPdf = async () => {
     try {
@@ -44,6 +86,35 @@ export default function ArtifactsTab({ session }) {
         <button className="btn-primary" onClick={handleExportPdf} disabled={exporting}>
           {exporting ? 'Generating PDF...' : 'Export PDF'}
         </button>
+      </div>
+
+      {/* Summary card */}
+      <div className="glass" style={{ padding: 20, marginBottom: 16 }}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Remediation Summary</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <div className="glass metric-card">
+            <div className="label">Total Findings</div>
+            <div className="value" style={{ color: 'var(--teal)' }}>{findings.length}</div>
+          </div>
+          <div className="glass metric-card">
+            <div className="label">Critical</div>
+            <div className="value" style={{ color: 'var(--red)' }}>
+              {findings.filter(f => f.severity === 'CRITICAL').length}
+            </div>
+          </div>
+          <div className="glass metric-card">
+            <div className="label">High</div>
+            <div className="value" style={{ color: '#f59e0b' }}>
+              {findings.filter(f => f.severity === 'HIGH').length}
+            </div>
+          </div>
+          <div className="glass metric-card">
+            <div className="label">Total Impact</div>
+            <div className="value" style={{ color: 'var(--teal)' }}>
+              {(findings.reduce((s, f) => s + (f.impact_ms || 0), 0) / 1000).toFixed(1)}s
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Optimized Instructions */}
@@ -154,6 +225,46 @@ export default function ArtifactsTab({ session }) {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* All Findings Detail Table */}
+      {findings.length > 0 && (
+        <div className="glass" style={{ padding: 20, marginTop: 16 }}>
+          <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>All Findings Detail</h4>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, fontFamily: 'var(--font-mono)' }}>
+              <thead>
+                <tr style={{ color: 'var(--text-muted)', borderBottom: '1px solid var(--border)' }}>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>#</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>Severity</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>Agent</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>Issue</th>
+                  <th style={{ textAlign: 'right', padding: '8px 12px' }}>Impact</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px' }}>Fix</th>
+                </tr>
+              </thead>
+              <tbody>
+                {findings.map((f, i) => {
+                  const sevColor = f.severity === 'CRITICAL' ? 'var(--red)' : f.severity === 'HIGH' ? '#f59e0b' : f.severity === 'MEDIUM' ? 'var(--teal)' : 'var(--text-muted)';
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                      <td style={{ padding: '6px 12px', color: 'var(--text-muted)' }}>{i + 1}</td>
+                      <td style={{ padding: '6px 12px' }}>
+                        <span style={{ color: sevColor, fontWeight: 600 }}>{f.severity}</span>
+                      </td>
+                      <td style={{ padding: '6px 12px', color: 'var(--text-muted)' }}>{f.agent_id || f.agentId || '-'}</td>
+                      <td style={{ padding: '6px 12px', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.issue}</td>
+                      <td style={{ padding: '6px 12px', textAlign: 'right', color: 'var(--red)' }}>
+                        {f.impact_ms ? `${(f.impact_ms / 1000).toFixed(1)}s` : '-'}
+                      </td>
+                      <td style={{ padding: '6px 12px', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>{f.fix || '-'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

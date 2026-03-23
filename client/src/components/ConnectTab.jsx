@@ -400,7 +400,7 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
 
       // Use live collection — sends real questions to the Data Agent /chat API
       setStatus('Connecting to Data Agent...');
-      setLiveProgress({ current: 0, total: 10, question: 'Starting...' });
+      setLiveProgress({ current: 0, total: 50, question: 'Starting...' });
       setLiveLog([]);
 
       collectLive(
@@ -419,7 +419,7 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
             setLiveLog([{ text: `Connected to ${directAgentName.trim() || 'Data Agent'} - sending ${data.total} diagnostic questions`, status: 'info' }]);
           } else if (data.type === 'progress') {
             setLiveProgress(prev => ({ ...prev, current: data.index + 1, question: data.question }));
-            setStatus(`Q${data.index + 1}/${data.total || 10}: Asking "${data.question}"`);
+            setStatus(`Q${data.index + 1}/${data.total || 50}: Asking "${data.question}"`);
             setLiveLog(prev => [...prev, { text: `Q${data.index + 1}: Sending >> "${data.question}"`, status: 'pending' }]);
           } else if (data.type === 'building') {
             setStatus('All questions answered - building trace database...');

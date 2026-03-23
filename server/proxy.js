@@ -295,7 +295,18 @@ app.post('/api/agent', async (req, res) => {
       content = content || '';
     } else {
       // Chat Completions API: choices[].message.content
-      content = data.choices?.[0]?.message?.content || '';
+      const msg = data.choices?.[0]?.message;
+      content = msg?.content || '';
+      // Debug: if content is empty, log the message structure
+      if (!content && msg) {
+        console.log('[LLM] Empty content, message keys:', Object.keys(msg));
+        console.log('[LLM] Full message:', JSON.stringify(msg).substring(0, 500));
+      }
+      // Fallback: check for refusal or function_call content
+      if (!content && msg?.refusal) {
+        console.log('[LLM] Model returned refusal:', msg.refusal.substring(0, 200));
+        content = msg.refusal;
+      }
     }
     console.log('[LLM] Success, content length:', content.length);
     res.json({ content, usage: data.usage });
