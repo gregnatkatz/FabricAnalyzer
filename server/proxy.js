@@ -12,6 +12,7 @@ const __dirname = dirname(__filename);
 // Global pipeline log buffer for real-time verbose streaming
 let pipelineLogBuffer = [];
 let pipelineRunning = false;
+let lastPipelineResult = null;
 
 config({ path: join(__dirname, '.env') });
 
@@ -1018,11 +1019,19 @@ app.post('/api/analyze', (req, res) => {
   // Reset pipeline log buffer for this run
   pipelineLogBuffer = [];
   pipelineRunning = true;
+  lastPipelineResult = null;
 
   const py = spawn(PYTHON_PATH, args, {
     cwd: join(__dirname, '..'),
     env: { ...process.env, PYTHONPATH: join(__dirname, '..') },
   });
+
+  // Kill pipeline after 5 minutes to prevent hanging
+  const pipelineTimeout = setTimeout(() => {
+    console.error('[pipeline] Pipeline timeout (300s) — killing process');
+    pipelineLogBuffer.push({ ts: Date.now(), line: '[EXIT] Pipeline killed after 300s timeout' });
+    py.kill('SIGTERM');
+  }, 300000);
 
   let output = '';
   let stderr = '';
@@ -1037,14 +1046,23 @@ app.post('/api/analyze', (req, res) => {
     });
   });
   py.on('close', (code) => {
+    clearTimeout(pipelineTimeout);
     pipelineRunning = false;
     if (code !== 0) {
       pipelineLogBuffer.push({ ts: Date.now(), line: `[EXIT] Pipeline exited with code ${code}` });
-      return res.status(500).json({ error: stderr || 'Pipeline failed', code });
+      // Still try to parse partial output
+      try {
+        const partial = JSON.parse(output);
+        lastPipelineResult = partial;
+        return res.status(200).json(partial); // Return partial results as success
+      } catch (e) {
+        return res.status(500).json({ error: stderr || 'Pipeline failed', code });
+      }
     }
     pipelineLogBuffer.push({ ts: Date.now(), line: '[EXIT] Pipeline completed successfully' });
     try {
       const result = JSON.parse(output);
+      lastPipelineResult = result;
       res.json(result);
     } catch (e) {
       res.json({ findings: [], message: output || 'Pipeline completed' });
@@ -1057,6 +1075,15 @@ app.get('/api/pipeline-log', (req, res) => {
   const since = parseInt(req.query.since || '0', 10);
   const events = pipelineLogBuffer.filter(e => e.ts > since);
   res.json({ running: pipelineRunning, events, total: pipelineLogBuffer.length });
+});
+
+// Endpoint to retrieve cached pipeline result (for salvaging partial results)
+app.get('/api/analyze-result', (req, res) => {
+  if (lastPipelineResult) {
+    res.json(lastPipelineResult);
+  } else {
+    res.status(404).json({ error: 'No pipeline result available' });
+  }
 });
 
 // Reset endpoint
@@ -3095,7 +3122,7 @@ app.delete('/api/history', (req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[server] Express proxy running on http://localhost:${PORT}`);
   console.log(`[server] LLM: ${process.env.LLM_MODEL} via ${process.env.LLM_ENDPOINT}`);
   console.log(`[server] LLM auth mode: ${LLM_AUTH_MODE}`);
@@ -3103,3 +3130,7 @@ app.listen(PORT, () => {
     console.warn(`[server] WARNING: Missing env vars: ${missing.join(', ')}`);
   }
 });
+// Pipeline can take 3-5 min with LLM timeouts/retries — extend HTTP timeout to 10 min
+server.timeout = 600000;
+server.keepAliveTimeout = 600000;
+server.headersTimeout = 610000;

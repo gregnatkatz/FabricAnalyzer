@@ -188,6 +188,37 @@ export default function WorkflowTab({ session, updateSession }) {
         return updated;
       });
       setError(`Analysis failed: ${err.message}`);
+
+      // Try to salvage partial results from the pipeline-log API
+      // The backend may have partial findings even if the HTTP call failed
+      try {
+        const partialResp = await fetch('/api/pipeline-log?since=0');
+        const partialData = await partialResp.json();
+        if (partialData.events && partialData.events.length > 0) {
+          const findingLines = partialData.events.filter(e => e.line && e.line.includes('findings'));
+          if (findingLines.length > 0) {
+            logEntries.push({ agent: 'pipeline', status: 'info', ts: Date.now(), message: `Pipeline produced partial results (${findingLines.length} agent outputs). Check Findings tab.` });
+            setLiveLog([...logEntries]);
+          }
+        }
+      } catch { /* ignore partial result fetch errors */ }
+
+      // Also try to fetch whatever the pipeline returned as partial JSON
+      try {
+        const salvageResp = await fetch('/api/analyze-result');
+        if (salvageResp.ok) {
+          const partial = await salvageResp.json();
+          if (partial.findings && partial.findings.length > 0) {
+            updateSession({
+              findings: partial.findings,
+              analysisComplete: true,
+              ...(partial.monte_carlo ? { monteCarloResults: partial.monte_carlo } : {}),
+              ...(partial.synthesis ? { synthesisResults: partial.synthesis } : {}),
+              ...(partial.remediation ? { remediationResults: partial.remediation } : {}),
+            });
+          }
+        }
+      } catch { /* ignore salvage errors */ }
     } finally {
       setRunning(false);
     }
