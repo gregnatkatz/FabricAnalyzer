@@ -1969,29 +1969,29 @@ print(json.dumps(result))
   res.end();
 });
 
-// ── Parallel Multi-Agent Collection ──
-// Splits questions across multiple agents and runs them concurrently
+// ── Parallel Trace Collection ──
+// Sends 50 LLM-generated questions to ONE selected agent in parallel threads (~1 min)
+// Architecture: 1 LLM generates questions → N parallel threads hit agent → 1 aggregation
 app.post('/api/fabric/collect-parallel', async (req, res) => {
-  const { workspaceId, agents, questionsPerAgent } = req.body;
-  // agents = [{agentId, agentName, agentInstructions}, ...]
+  const { workspaceId, agentId, agentName, agentInstructions, totalQuestions: reqTotal } = req.body;
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'No token provided' });
-  if (!workspaceId || !agents?.length) return res.status(400).json({ error: 'workspaceId and agents[] required' });
+  if (!workspaceId || !agentId) return res.status(400).json({ error: 'workspaceId and agentId required' });
 
-  const qPerAgent = questionsPerAgent || Math.ceil(50 / agents.length);
-  const totalQuestions = qPerAgent * agents.length;
+  const totalQuestions = reqTotal || 50;
+  const CONCURRENCY = 10; // max parallel threads at once
 
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
   const sendEvent = (type, data) => { try { res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`); } catch {} };
 
-  sendEvent('status', { message: `Parallel collection: ${agents.length} agents × ${qPerAgent} questions = ${totalQuestions} total` });
-  console.log(`[parallel] Starting parallel collection: ${agents.length} agents × ${qPerAgent} questions`);
+  sendEvent('status', { message: `Parallel collection: ${totalQuestions} questions → ${agentName} (${CONCURRENCY} concurrent threads)` });
+  console.log(`[parallel] Starting: ${totalQuestions} questions → ${agentName} (concurrency=${CONCURRENCY})`);
 
-  // Step 1: Generate all questions at once using gpt-5.4
-  sendEvent('status', { message: 'Generating domain-specific questions via LLM...' });
-  let allQuestions = [];
+  // Step 1: LLM generates domain-specific questions by examining schema + agent
+  sendEvent('status', { message: 'LLM generating domain-specific questions (examining schema + agent)...' });
+  let questions = [];
   try {
-    // Fetch schema context (reuse logic from collect-live but abbreviated)
+    // Fetch schema context from Fabric API
     let schemaContext = '';
     try {
       const dsResp = await fetch(`https://api.fabric.microsoft.com/v1/workspaces/${workspaceId}/semanticModels`, { headers: { Authorization: `Bearer ${token}` } });
@@ -2017,23 +2017,22 @@ app.post('/api/fabric/collect-parallel', async (req, res) => {
       }
     } catch {}
 
-    const agentDescriptions = agents.map(a => `- ${a.agentName}: ${(a.agentInstructions || '').substring(0, 200)}`).join('\n');
     const modelConfig = getModelConfig('gpt-5.4');
     const base = modelConfig.endpoint.replace(/\/openai\/v1\/?$/, '').replace(/\/+$/, '');
     const llmUrl = `${base}/openai/deployments/gpt-5.4/chat/completions?api-version=2025-01-01-preview`;
 
-    const prompt = `Generate exactly ${totalQuestions} domain-specific questions for testing ${agents.length} Microsoft Fabric Data Agents in a healthcare workspace.
+    const prompt = `Generate exactly ${totalQuestions} domain-specific questions for testing a Microsoft Fabric Data Agent.
 
-Agents available:
-${agentDescriptions}
+Agent: ${agentName}
+${agentInstructions ? `Agent Description: ${agentInstructions.substring(0, 500)}` : ''}
 
 ${schemaContext ? `Data Schema Context:\n${schemaContext.substring(0, 6000)}` : ''}
 
-Generate ${qPerAgent} questions PER agent. Tag each question with the target agent name.
-Questions should exercise real tables, columns, measures in the dataset.
-Mix complexity: simple counts, aggregations, rankings, trends, complex analytics.
+Generate ${totalQuestions} questions that exercise real tables, columns, measures in the dataset.
+Mix complexity: simple counts, aggregations, rankings, trends, filtering, complex analytics, edge cases.
+Questions should be specific to the agent's domain and use actual column/table names from the schema.
 
-Return ONLY a JSON array: [{"question": "...", "category": "...", "targetAgent": "AgentName"}, ...]
+Return ONLY a JSON array: [{"question": "...", "category": "..."}, ...]
 Categories: count, listing, aggregation, ranking, trend, filtering, comparison, analysis, complex, edge_case`;
 
     const llmResp = await fetch(llmUrl, {
@@ -2042,7 +2041,7 @@ Categories: count, listing, aggregation, ranking, trend, filtering, comparison, 
       body: JSON.stringify({
         model: 'gpt-5.4',
         messages: [
-          { role: 'system', content: 'Generate test questions for data agents. Return ONLY valid JSON arrays.' },
+          { role: 'system', content: 'Generate domain-specific test questions for a data agent. Return ONLY valid JSON arrays.' },
           { role: 'user', content: prompt },
         ],
         max_completion_tokens: 10000,
@@ -2057,48 +2056,45 @@ Categories: count, listing, aggregation, ranking, trend, filtering, comparison, 
       if (cleaned.startsWith('```')) cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
       const parsed = JSON.parse(cleaned);
       if (Array.isArray(parsed)) {
-        allQuestions = parsed.map(q => ({
+        questions = parsed.map(q => ({
           question: String(q.question || ''),
           category: String(q.category || 'analysis'),
-          targetAgent: String(q.targetAgent || ''),
-        })).filter(q => q.question.length > 5);
+        })).filter(q => q.question.length > 5).slice(0, totalQuestions);
       }
     }
   } catch (qErr) {
     console.log(`[parallel] Question generation error: ${qErr.message}`);
   }
 
-  // Fallback: generate generic questions if LLM failed
-  if (allQuestions.length < totalQuestions) {
-    const genericQs = [
+  // Fallback if LLM failed or returned too few
+  if (questions.length < totalQuestions) {
+    const fallback = [
       'How many total records are in the primary dataset?',
       'What are the distinct categories or types?',
       'Show the top 10 items by volume',
       'What is the average value of the main metric?',
       'Show a breakdown by the primary dimension',
+      'What are the trends over the last 12 months?',
+      'Which items have the highest variance?',
+      'Show the distribution of the key measure',
+      'Compare performance across the top 5 categories',
+      'What percentage of records fall below the threshold?',
     ];
-    while (allQuestions.length < totalQuestions) {
-      const agentIdx = allQuestions.length % agents.length;
-      const qIdx = Math.floor(allQuestions.length / agents.length) % genericQs.length;
-      allQuestions.push({
-        question: genericQs[qIdx],
-        category: 'analysis',
-        targetAgent: agents[agentIdx].agentName,
-      });
+    while (questions.length < totalQuestions) {
+      questions.push({ question: fallback[questions.length % fallback.length], category: 'analysis' });
     }
   }
 
-  console.log(`[parallel] Generated ${allQuestions.length} questions for ${agents.length} agents`);
-  sendEvent('status', { message: `Generated ${allQuestions.length} questions — starting parallel collection across ${agents.length} agents` });
-  sendEvent('start', { total: allQuestions.length, agents: agents.map(a => a.agentName) });
+  console.log(`[parallel] LLM generated ${questions.length} questions for ${agentName}`);
+  sendEvent('status', { message: `Generated ${questions.length} questions — sending to ${agentName} in ${CONCURRENCY} parallel threads` });
+  sendEvent('start', { total: questions.length, agentName });
 
-  // Step 2: Distribute questions to agents and run in parallel
+  // Step 2: Create ONE assistant, then send all questions in parallel threads
   const apiVersion = '2024-05-01-preview';
   const allTraces = [];
   let completedCount = 0;
 
-  // Helper to make Fabric Data Agent API calls
-  const agentApiCall = async (agentId, path, method = 'GET', body = null) => {
+  const agentApiCall = async (path, method = 'GET', body = null) => {
     const baseUrl = `https://api.fabric.microsoft.com/v1/workspaces/${workspaceId}/dataagents/${agentId}/aiassistant/openai`;
     const sep = path.includes('?') ? '&' : '?';
     const url = `${baseUrl}${path}${sep}api-version=${apiVersion}`;
@@ -2110,117 +2106,100 @@ Categories: count, listing, aggregation, ranking, trend, filtering, comparison, 
     return resp.json();
   };
 
-  // Process one agent's questions
-  const processAgent = async (agent, questions) => {
-    const { agentId, agentName } = agent;
-    console.log(`[parallel] Agent ${agentName}: starting ${questions.length} questions`);
+  // Create one assistant for this agent
+  let assistantId;
+  try {
+    const assistant = await agentApiCall('/assistants', 'POST', { model: 'not used' });
+    assistantId = assistant.id;
+    console.log(`[parallel] Assistant created: ${assistantId}`);
+  } catch (err) {
+    console.log(`[parallel] Failed to create assistant: ${err.message}`);
+    sendEvent('error', { message: `Failed to create assistant: ${err.message}` });
+    res.end();
+    return;
+  }
 
-    let assistantId;
+  // Process ONE question in its own thread (called concurrently)
+  const processQuestion = async (q, index) => {
+    const startTime = Date.now();
+    let responseText = '', status = 'fail', retries = 0, daxGenerated = '', errorMsg = '', threadId = null;
+
     try {
-      const assistant = await agentApiCall(agentId, '/assistants', 'POST', { model: 'not used' });
-      assistantId = assistant.id;
-    } catch (err) {
-      console.log(`[parallel] Agent ${agentName}: failed to create assistant: ${err.message}`);
-      // Return fail traces for all questions
-      return questions.map(q => ({
-        question: q.question, category: q.category, agentName, agentId,
-        responseTimeMs: 0, responseTimeSec: 0, retries: 0, status: 'fail',
-        daxGenerated: '', response: '', error: `Assistant creation failed: ${err.message}`, tablesUsed: '',
-      }));
-    }
+      const thread = await agentApiCall('/threads', 'POST', {});
+      threadId = thread.id;
+      await agentApiCall(`/threads/${threadId}/messages`, 'POST', { role: 'user', content: q.question });
+      const run = await agentApiCall(`/threads/${threadId}/runs`, 'POST', { assistant_id: assistantId, stream: false });
+      let runId = run.id, runStatus = run.status;
 
-    const traces = [];
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i];
-      const startTime = Date.now();
-      let responseText = '', status = 'fail', retries = 0, daxGenerated = '', errorMsg = '', threadId = null;
-
-      try {
-        const thread = await agentApiCall(agentId, '/threads', 'POST', {});
-        threadId = thread.id;
-        await agentApiCall(agentId, `/threads/${threadId}/messages`, 'POST', { role: 'user', content: q.question });
-        const run = await agentApiCall(agentId, `/threads/${threadId}/runs`, 'POST', { assistant_id: assistantId, stream: false });
-        let runId = run.id, runStatus = run.status;
-
-        const pollTimeout = 180000;
-        const pollStart = Date.now();
-        while (runStatus === 'queued' || runStatus === 'in_progress' || runStatus === 'requires_action') {
-          if (Date.now() - pollStart > pollTimeout) { errorMsg = 'Timeout (180s)'; break; }
-          await new Promise(r => setTimeout(r, 2000));
-          try {
-            const rc = await agentApiCall(agentId, `/threads/${threadId}/runs/${runId}`, 'GET');
-            runStatus = rc.status;
-          } catch (pe) { retries++; if (retries > 3) break; }
-        }
-
-        if (runStatus === 'completed') {
-          const msgs = await agentApiCall(agentId, `/threads/${threadId}/messages`, 'GET');
-          const aMsg = (msgs.data || []).filter(m => m.role === 'assistant');
-          if (aMsg.length > 0) {
-            responseText = aMsg[aMsg.length - 1].content?.map(c => c.text?.value || '').join('\n') || '';
-            status = 'pass';
-            const daxMatch = responseText.match(/```dax\n?([\s\S]*?)```/i);
-            if (daxMatch) daxGenerated = daxMatch[1].trim().substring(0, 200);
-          }
-        } else if (runStatus === 'failed') {
-          try { const rd = await agentApiCall(agentId, `/threads/${threadId}/runs/${runId}`, 'GET'); errorMsg = rd.last_error?.message || `Failed: ${runStatus}`; } catch { errorMsg = `Failed: ${runStatus}`; }
-        } else if (!errorMsg) { errorMsg = `Status: ${runStatus}`; }
-
-        try { await agentApiCall(agentId, `/threads/${threadId}`, 'DELETE'); } catch {}
-      } catch (err) {
-        errorMsg = err.message || 'Unknown error';
-        if (threadId) { try { await agentApiCall(agentId, `/threads/${threadId}`, 'DELETE'); } catch {} }
+      const pollTimeout = 180000;
+      const pollStart = Date.now();
+      while (runStatus === 'queued' || runStatus === 'in_progress' || runStatus === 'requires_action') {
+        if (Date.now() - pollStart > pollTimeout) { errorMsg = 'Timeout (180s)'; break; }
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const rc = await agentApiCall(`/threads/${threadId}/runs/${runId}`, 'GET');
+          runStatus = rc.status;
+        } catch (pe) { retries++; if (retries > 3) break; }
       }
 
-      const totalMs = Date.now() - startTime;
-      const trace = {
-        question: q.question, category: q.category, agentName, agentId,
-        responseTimeMs: totalMs, responseTimeSec: Math.round(totalMs / 1000),
-        retries, status, daxGenerated, response: responseText.substring(0, 300),
-        error: errorMsg, tablesUsed: '',
-      };
-      traces.push(trace);
-      completedCount++;
+      if (runStatus === 'completed') {
+        const msgs = await agentApiCall(`/threads/${threadId}/messages`, 'GET');
+        const aMsg = (msgs.data || []).filter(m => m.role === 'assistant');
+        if (aMsg.length > 0) {
+          responseText = aMsg[aMsg.length - 1].content?.map(c => c.text?.value || '').join('\n') || '';
+          status = 'pass';
+          const daxMatch = responseText.match(/```dax\n?([\s\S]*?)```/i);
+          if (daxMatch) daxGenerated = daxMatch[1].trim().substring(0, 200);
+        }
+      } else if (runStatus === 'failed') {
+        try { const rd = await agentApiCall(`/threads/${threadId}/runs/${runId}`, 'GET'); errorMsg = rd.last_error?.message || `Failed: ${runStatus}`; } catch { errorMsg = `Failed: ${runStatus}`; }
+      } else if (!errorMsg) { errorMsg = `Status: ${runStatus}`; }
 
-      console.log(`[parallel] ${agentName} Q${i + 1}/${questions.length} ${status}: ${totalMs}ms`);
-      sendEvent('trace', { index: completedCount - 1, total: allQuestions.length, agentName, trace, elapsed: totalMs });
-      sendEvent('progress', { completed: completedCount, total: allQuestions.length, agentName, question: q.question, elapsed: totalMs, status });
+      try { await agentApiCall(`/threads/${threadId}`, 'DELETE'); } catch {}
+    } catch (err) {
+      errorMsg = err.message || 'Unknown error';
+      if (threadId) { try { await agentApiCall(`/threads/${threadId}`, 'DELETE'); } catch {} }
     }
 
-    // Cleanup assistant
-    try { await agentApiCall(agentId, `/assistants/${assistantId}`, 'DELETE'); } catch {}
-    return traces;
+    const totalMs = Date.now() - startTime;
+    const trace = {
+      question: q.question, category: q.category, agentName, agentId,
+      responseTimeMs: totalMs, responseTimeSec: Math.round(totalMs / 1000),
+      retries, status, daxGenerated, response: responseText.substring(0, 300),
+      error: errorMsg, tablesUsed: '',
+    };
+
+    completedCount++;
+    console.log(`[parallel] Q${completedCount}/${questions.length} ${status}: ${totalMs}ms — ${q.question.substring(0, 60)}`);
+    sendEvent('trace', { index: completedCount - 1, total: questions.length, agentName, trace, elapsed: totalMs });
+    sendEvent('progress', { completed: completedCount, total: questions.length, agentName, question: q.question, elapsed: totalMs, status });
+
+    return trace;
   };
 
-  // Distribute questions to agents
-  const agentQueues = agents.map(() => []);
-  for (let i = 0; i < allQuestions.length; i++) {
-    const q = allQuestions[i];
-    // Try to match by targetAgent name, fallback to round-robin
-    let targetIdx = agents.findIndex(a => a.agentName === q.targetAgent);
-    if (targetIdx === -1) targetIdx = i % agents.length;
-    agentQueues[targetIdx].push(q);
-  }
-
-  // Run all agents in parallel
+  // Run questions in parallel batches of CONCURRENCY
   const startAll = Date.now();
-  const agentPromises = agents.map((agent, idx) => processAgent(agent, agentQueues[idx]));
-  const results = await Promise.allSettled(agentPromises);
-
-  for (const r of results) {
-    if (r.status === 'fulfilled') allTraces.push(...r.value);
-    else console.log(`[parallel] Agent failed: ${r.reason}`);
+  for (let batch = 0; batch < questions.length; batch += CONCURRENCY) {
+    const batchQuestions = questions.slice(batch, batch + CONCURRENCY);
+    const batchPromises = batchQuestions.map((q, i) => processQuestion(q, batch + i));
+    const batchResults = await Promise.allSettled(batchPromises);
+    for (const r of batchResults) {
+      if (r.status === 'fulfilled') allTraces.push(r.value);
+      else { console.log(`[parallel] Question failed: ${r.reason}`); }
+    }
   }
+
+  // Cleanup assistant
+  try { await agentApiCall(`/assistants/${assistantId}`, 'DELETE'); } catch {}
 
   const totalTime = Date.now() - startAll;
   console.log(`[parallel] Collection complete: ${allTraces.length} traces in ${(totalTime / 1000).toFixed(1)}s (${allTraces.filter(t => t.status === 'pass').length} passed)`);
 
-  // Step 3: Build SQLite DB from aggregated traces (reuse buildPy from collect-live)
+  // Step 3: Build SQLite DB from traces
   sendEvent('building', { message: `Building trace database from ${allTraces.length} traces...` });
   const sessionId = `parallel_${Date.now().toString(36)}`;
   const dbPath = join(SQLITE_DIR, `${sessionId}.db`);
 
-  // Reuse the same Python DB builder
   const buildPyParallel = `
 import sqlite3, json, sys, uuid
 from datetime import datetime
@@ -2242,22 +2221,17 @@ CREATE TABLE IF NOT EXISTS findings (finding_id INTEGER PRIMARY KEY AUTOINCREMEN
 db.executescript(SCHEMA_SQL)
 
 workspace_id = data['workspaceId']
+agent_id = data['agentId']
+agent_name = data['agentName']
 now = datetime.utcnow().isoformat()
 
-# Insert one model row per unique agent
-seen_agents = set()
-for agent in data['agents']:
-    aid = agent['agentId']
-    if aid in seen_agents: continue
-    seen_agents.add(aid)
-    db.execute('INSERT OR REPLACE INTO models VALUES (?,?,?,?,?,?,?,?)',
-        (aid, workspace_id, agent.get('agentName', 'Unknown'), 0, 'DirectLake', now, 1, now))
-    agent_config_id = f'agent_{aid[:8]}'
-    instr = agent.get('agentInstructions', '')
-    db.execute('INSERT OR REPLACE INTO agent_config VALUES (?,?,?,?,?,?,?,?)',
-        (agent_config_id, aid, workspace_id, instr, len(instr), 0, 0, 0))
+db.execute('INSERT OR REPLACE INTO models VALUES (?,?,?,?,?,?,?,?)',
+    (agent_id, workspace_id, agent_name, 0, 'DirectLake', now, 1, now))
+agent_config_id = f'agent_{agent_id[:8]}'
+instr = data.get('agentInstructions', '')
+db.execute('INSERT OR REPLACE INTO agent_config VALUES (?,?,?,?,?,?,?,?)',
+    (agent_config_id, agent_id, workspace_id, instr, len(instr), 0, 0, 0))
 
-# Insert traces
 for t in data['traces']:
     trace_id = f'trace_{uuid.uuid4().hex[:8]}'
     total_ms = int(t.get('responseTimeMs', 0))
@@ -2266,10 +2240,8 @@ for t in data['traces']:
     bd_nldax = int(total_ms * 0.35)
     bd_exec = int(total_ms * 0.40)
     bd_synth = total_ms - bd_parse - bd_schema - bd_nldax - bd_exec
-    agent_config_id = f'agent_{t.get("agentId", "")[:8]}'
-    model_id = t.get('agentId', '')
     db.execute('INSERT INTO traces VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        (trace_id, agent_config_id, model_id,
+        (trace_id, agent_config_id, agent_id,
          t.get('question', ''), t.get('category', 'general'),
          total_ms, t.get('retries', 0), t.get('daxGenerated', ''), t.get('tablesUsed', ''),
          t.get('status', 'fail'), 0, bd_parse, bd_schema, bd_nldax, bd_exec, bd_synth, 0,
@@ -2283,12 +2255,11 @@ db.close()
 result = {
     'sessionId': data['sessionId'],
     'dbPath': data['dbPath'],
-    'modelName': 'Multi-Agent Parallel (' + str(len(data['agents'])) + ' agents)',
-    'domain': 'MULTI_AGENT',
+    'modelName': agent_name,
+    'domain': 'HEALTHCARE',
     'traces': traces_out,
     'liveCollection': True,
     'parallelCollection': True,
-    'agentCount': len(data['agents']),
     'totalTimeMs': data.get('totalTimeMs', 0),
 }
 print(json.dumps(result))
@@ -2296,7 +2267,8 @@ print(json.dumps(result))
 
   try {
     const inputData = JSON.stringify({
-      sessionId, dbPath, workspaceId, agents, traces: allTraces, totalTimeMs: totalTime,
+      sessionId, dbPath, workspaceId, agentId, agentName, agentInstructions: agentInstructions || '',
+      traces: allTraces, totalTimeMs: totalTime,
     });
     const pyResult = await new Promise((resolve, reject) => {
       const py = spawn(PYTHON_PATH, ['-c', buildPyParallel], {

@@ -391,46 +391,49 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [liveProgress, setLiveProgress] = useState({ current: 0, total: 0, question: '' });
   const [liveLog, setLiveLog] = useState([]);
 
-  // ── Parallel Multi-Agent Collection ──
+  // ── Parallel Trace Collection ──
+  // Sends 50 LLM-generated questions to the selected agent in parallel threads (~1 min)
   const handleParallelCollect = async () => {
-    if (!workspaceId.trim() || agents.length === 0) return;
+    if (!workspaceId.trim() || !selectedAgentId) return;
+    const agent = agents.find(a => a.id === selectedAgentId);
+    if (!agent) return;
     try {
       setLoading(true);
       setError('');
       const token = await getAccessToken().catch(() => manualTokenInput.trim());
-      const qPerAgent = Math.max(5, Math.ceil(50 / agents.length));
-      const totalQ = qPerAgent * agents.length;
-      setStatus(`Parallel collection: ${agents.length} agents × ${qPerAgent} questions = ${totalQ} total`);
-      setLiveProgress({ current: 0, total: totalQ, question: 'Starting parallel collection...' });
-      setLiveLog([{ text: `Parallel collection: ${agents.length} agents × ${qPerAgent} questions each`, status: 'info' }]);
+      setStatus(`Parallel collection: 50 questions → ${agent.name} (10 concurrent threads)`);
+      setLiveProgress({ current: 0, total: 50, question: 'LLM generating domain-specific questions...' });
+      setLiveLog([{ text: `Parallel collection: 50 questions → ${agent.name} (10 concurrent threads)`, status: 'info' }]);
 
       collectParallel(
         {
           workspaceId: workspaceId.trim(),
-          agents: agents.map(a => ({ agentId: a.id, agentName: a.name, agentInstructions: a.description || '' })),
-          questionsPerAgent: qPerAgent,
+          agentId: agent.id,
+          agentName: agent.name,
+          agentInstructions: agent.description || '',
+          totalQuestions: 50,
         },
         token,
         // onProgress
         (data) => {
           if (data.type === 'start') {
-            setLiveProgress({ current: 0, total: data.total, question: `${data.agents?.length || agents.length} agents running in parallel...` });
-            setLiveLog(prev => [...prev, { text: `Started ${data.agents?.length || agents.length} agents in parallel`, status: 'info' }]);
+            setLiveProgress({ current: 0, total: data.total || 50, question: `Sending ${data.total || 50} questions to ${agent.name} in parallel...` });
+            setLiveLog(prev => [...prev, { text: `Sending ${data.total || 50} parallel threads to ${agent.name}`, status: 'info' }]);
           } else if (data.type === 'progress') {
-            setLiveProgress(prev => ({ ...prev, current: data.completed || prev.current + 1, question: `[${data.agentName}] ${data.question || ''}` }));
+            setLiveProgress(prev => ({ ...prev, current: data.completed || prev.current + 1, question: `${data.question || ''}` }));
             const icon = data.status === 'pass' ? 'OK' : data.status === 'fail' ? 'FAIL' : '';
             const latency = data.elapsed ? ` in ${(data.elapsed / 1000).toFixed(1)}s` : '';
-            setStatus(`[${data.completed}/${data.total}] ${data.agentName}: ${icon}${latency}`);
+            setStatus(`[${data.completed}/${data.total}] ${icon}${latency}`);
             setLiveLog(prev => [...prev, {
-              text: `[${data.agentName}] Q${data.completed}: ${icon}${latency} — "${(data.question || '').substring(0, 40)}"`,
+              text: `Q${data.completed}/${data.total}: ${icon}${latency} — "${(data.question || '').substring(0, 50)}"`,
               status: data.status === 'pass' ? 'pass' : data.status === 'fail' ? 'fail' : 'pending',
             }]);
           } else if (data.type === 'status') {
             setStatus(data.message || '');
             setLiveLog(prev => [...prev, { text: data.message || '', status: 'info' }]);
           } else if (data.type === 'building') {
-            setStatus('All agents done — building aggregated trace database...');
-            setLiveLog(prev => [...prev, { text: 'Building aggregated trace database...', status: 'info' }]);
+            setStatus('All questions done — building trace database...');
+            setLiveLog(prev => [...prev, { text: 'Building trace database...', status: 'info' }]);
           }
         },
         // onTrace (individual trace)
@@ -441,9 +444,9 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
             connected: true,
             sessionId: result.sessionId,
             dbPath: result.dbPath,
-            modelId: 'multi-agent',
-            modelName: result.modelName || `Multi-Agent Parallel (${agents.length} agents)`,
-            domain: result.domain || 'MULTI_AGENT',
+            modelId: agent.id,
+            modelName: result.modelName || agent.name,
+            domain: result.domain || 'HEALTHCARE',
             traces: result.traces || [],
             collectionComplete: true,
             workspaceId: workspaceId.trim(),
@@ -451,7 +454,7 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
             parallelCollection: true,
           });
           const totalSec = result.totalTimeMs ? (result.totalTimeMs / 1000).toFixed(0) : '?';
-          setStatus(`Parallel collection complete — ${(result.traces || []).length} traces from ${agents.length} agents in ${totalSec}s`);
+          setStatus(`Parallel collection complete — ${(result.traces || []).length} traces from ${agent.name} in ${totalSec}s`);
           setLoading(false);
           setLiveProgress({ current: 0, total: 0, question: '' });
           onNavigate('traces');
@@ -1221,21 +1224,21 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
               {loading ? status || 'Collecting...' : 'Analyze Data Agent'}
             </button>
 
-            {/* Parallel Collection Button — shows when agents are loaded */}
-            {agents.length >= 2 && (
+            {/* Parallel Collection Button — shows when an agent is selected */}
+            {selectedAgentId && (
               <button
                 className="btn-primary"
                 onClick={handleParallelCollect}
-                disabled={loading || !workspaceId.trim()}
+                disabled={loading || !workspaceId.trim() || !selectedAgentId}
                 style={{
                   width: '100%',
                   justifyContent: 'center',
                   marginTop: 8,
                   background: loading ? undefined : 'linear-gradient(135deg, var(--teal), #6366f1)',
-                  opacity: loading ? 0.5 : 1,
+                  opacity: (loading || !selectedAgentId) ? 0.5 : 1,
                 }}
               >
-                {loading ? status || 'Running...' : `Parallel Collection — All ${agents.length} Agents (${Math.max(5, Math.ceil(50 / agents.length))}q each, ~1 min)`}
+                {loading ? status || 'Running...' : `Parallel Collection — 50 Questions (10 threads, ~1 min)`}
               </button>
             )}
 
