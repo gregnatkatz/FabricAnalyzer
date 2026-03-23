@@ -227,7 +227,7 @@ app.post('/api/agent', async (req, res) => {
     // Retry logic: all models get 2 attempts to handle transient failures (timeouts, empty responses).
     // DeepSeek-V3.2-Speciale sometimes returns empty JSON or times out on first try but succeeds on retry.
     // GPT-5.4 Pro with medium reasoning effort needs 240-480s for complex pipeline prompts.
-    const timeouts = useResponsesApi ? [30] : [180, 180];
+    const timeouts = useResponsesApi ? [30] : [60, 60];
     let lastError = null;
     let data = null;
 

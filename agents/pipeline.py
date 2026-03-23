@@ -85,7 +85,7 @@ def call_llm(proxy_url, system_prompt, user_msg, max_tokens=1200, model_override
             print(f'[pipeline] LLM call{label}', file=sys.stderr)
             # Reasoning models: proxy retries with escalating timeouts (240/360/480s)
             # so use a very generous pipeline-level timeout to let the proxy finish its retries
-            req_timeout = 500 if is_reasoning else 190
+            req_timeout = 500 if is_reasoning else 60
             resp = requests.post(
                 f'{proxy_url}/api/agent',
                 json=payload,
@@ -517,7 +517,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
         # Collect results from all parallel agents
         for agent_id, future in agent_tasks.items():
             try:
-                name, result_data, findings = future.result(timeout=180)
+                name, result_data, findings = future.result(timeout=90)
                 all_findings.extend(findings)
                 results[name] = result_data
                 print(f'[pipeline] {name}: {len(findings)} findings (parallel complete)', file=sys.stderr)
@@ -658,7 +658,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
 
             # Collect results
             try:
-                fv_findings, fv_data = fv_future.result(timeout=180)
+                fv_findings, fv_data = fv_future.result(timeout=60)
                 print(f'[pipeline] finding_validator: {len(fv_findings)} findings (parallel complete)', file=sys.stderr)
                 all_findings.extend(fv_findings)
                 write_findings_to_db(db_path, fv_findings, agent_id_override='finding_validator')
@@ -668,7 +668,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
                 results['finding_validator'] = {'findings': [], 'error': str(e)}
 
             try:
-                rv_findings, rv_data = rv_future.result(timeout=180)
+                rv_findings, rv_data = rv_future.result(timeout=60)
                 print(f'[pipeline] report_validator: {len(rv_findings)} findings (parallel complete)', file=sys.stderr)
                 all_findings.extend(rv_findings)
                 write_findings_to_db(db_path, rv_findings, agent_id_override='report_validator')
