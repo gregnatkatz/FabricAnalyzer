@@ -258,7 +258,7 @@ export default function FindingsTab({ session }) {
               The <strong>single biggest latency offender</strong> is <em>"{topOffender.issue}"</em> with
               an estimated impact of <strong style={{ color: 'var(--red)' }}>{topOffender.impact_ms >= 1000 ? `${(topOffender.impact_ms / 1000).toFixed(1)}s` : `${topOffender.impact_ms}ms`}</strong>.
               Remediating just the top 3 findings would eliminate approximately <strong style={{ color: 'var(--green)' }}>
-              {((criticalFindings.slice(0, 3).reduce((s, f) => s + (f.impact_ms || 0), 0) / Math.max(totalImpactMs, 1)) * 100).toFixed(0)}%</strong> of
+              {(([...findings].sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0)).slice(0, 3).reduce((s, f) => s + (f.impact_ms || 0), 0) / Math.max(totalImpactMs, 1)) * 100).toFixed(0)}%</strong> of
               the total measured latency impact. Click any finding below to expand its detailed explanation, evidence, recommended fix, and step-by-step resolution guide.
             </p>
           )}
@@ -354,15 +354,36 @@ export default function FindingsTab({ session }) {
         ))}
       </div>
 
-      {/* Findings list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {sorted.map((finding, i) => (
-          <FindingCard key={finding.finding_id || i} finding={finding} rank={i + 1} session={session} />
-        ))}
-        {sorted.length === 0 && (
-          <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 32 }}>No findings match filters.</p>
-        )}
-      </div>
+      {/* Findings list — separate agent findings from validator meta-findings */}
+      {(() => {
+        const agentFindings = sorted.filter(f => !['finding_validator', 'report_validator'].includes(f.agent_id));
+        const metaFindings = sorted.filter(f => ['finding_validator', 'report_validator'].includes(f.agent_id));
+        return (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {agentFindings.map((finding, i) => (
+                <FindingCard key={finding.finding_id || i} finding={finding} rank={i + 1} session={session} />
+              ))}
+            </div>
+            {metaFindings.length > 0 && (
+              <div style={{ marginTop: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <h4 style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', margin: 0 }}>Validation & Quality Checks</h4>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>These are meta-findings from the validator agents reviewing the analysis above</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, opacity: 0.85 }}>
+                  {metaFindings.map((finding, i) => (
+                    <FindingCard key={finding.finding_id || i} finding={finding} rank={agentFindings.length + i + 1} session={session} />
+                  ))}
+                </div>
+              </div>
+            )}
+            {sorted.length === 0 && (
+              <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 32 }}>No findings match filters.</p>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }

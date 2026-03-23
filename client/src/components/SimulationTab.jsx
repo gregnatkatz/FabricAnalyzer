@@ -66,9 +66,9 @@ export default function SimulationTab({ session, updateSession }) {
     <div className="fade-in">
       {/* Narrative Simulation Overview */}
       <div className="glass" style={{ padding: '20px 24px', marginBottom: 20, borderLeft: '3px solid var(--teal)' }}>
-        <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 10, color: 'var(--teal)' }}>Monte Carlo Simulation Overview</h3>
+        <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 10, color: 'var(--teal)' }}>Latency Impact Projection</h3>
         <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--text-primary)', marginBottom: 8 }}>
-          This simulation models the projected impact of each recommended fix on query latency using a <strong>pure deterministic math model</strong> calibrated
+          This projection models the estimated impact of each recommended fix on query latency using a <strong>deterministic math model</strong> calibrated
           against Microsoft's published Fabric Data Agent performance benchmarks. Each fix applies reduction factors to the three latency phases:
           Schema Resolution, DAX Generation, and Execution. Factors are capped at 78% (schema), 82% (DAX), and 65% (execution) to prevent
           over-optimistic projections.

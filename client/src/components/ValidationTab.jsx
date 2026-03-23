@@ -69,6 +69,12 @@ export default function ValidationTab({ session, updateSession }) {
 
   const vr = session.validationResults;
 
+  // Compute baseline latency from traces so we can show it even before validation runs
+  const traces = session.traces || [];
+  const baselineAvgMs = traces.length > 0
+    ? traces.reduce((sum, t) => sum + (t.latency_ms || 0), 0) / traces.length
+    : 0;
+
   if (validationState === STATES.LOCKED) {
     return (
       <div className="glass fade-in" style={{ padding: 48, textAlign: 'center' }}>
@@ -122,27 +128,37 @@ export default function ValidationTab({ session, updateSession }) {
         </div>
       )}
 
-      {/* Results */}
-      {vr && validationState !== STATES.LOCKED && (
+      {/* Results — show baseline from traces even before validation runs */}
+      {(vr || baselineAvgMs > 0) && validationState !== STATES.LOCKED && (
         <>
           {/* Summary cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
             <div className="glass metric-card">
-              <div className="label">Before</div>
-              <div className="value" style={{ color: 'var(--red)' }}>{((vr.baseline_avg_ms || 0) / 1000).toFixed(1)}s</div>
-              <div className="label">avg latency</div>
+              <div className="label">Before (Measured)</div>
+              <div className="value" style={{ color: 'var(--red)' }}>{((vr?.baseline_avg_ms || baselineAvgMs) / 1000).toFixed(1)}s</div>
+              <div className="label">avg latency ({traces.length} traces)</div>
             </div>
             <div className="glass metric-card">
-              <div className="label">After</div>
-              <div className="value" style={{ color: 'var(--green)' }}>{((vr.postfix_avg_ms || 0) / 1000).toFixed(1)}s</div>
-              <div className="label">avg latency</div>
+              <div className="label">After (Projected)</div>
+              <div className="value" style={{ color: vr?.postfix_avg_ms ? 'var(--green)' : 'var(--text-muted)' }}>
+                {vr?.postfix_avg_ms ? `${(vr.postfix_avg_ms / 1000).toFixed(1)}s` : 'Run validation'}
+              </div>
+              <div className="label">{vr?.postfix_avg_ms ? 'avg latency' : 'to measure'}</div>
             </div>
             <div className="glass metric-card">
               <div className="label">Reduction</div>
-              <div className="value" style={{ color: 'var(--teal)' }}>{vr.reduction_pct || 0}%</div>
-              <div className="label">improvement</div>
+              <div className="value" style={{ color: vr?.reduction_pct ? 'var(--teal)' : 'var(--text-muted)' }}>
+                {vr?.reduction_pct ? `${vr.reduction_pct}%` : '—'}
+              </div>
+              <div className="label">{vr?.reduction_pct ? 'improvement' : 'pending'}</div>
             </div>
           </div>
+
+          {!vr && baselineAvgMs > 0 && (
+            <div className="glass" style={{ padding: '12px 16px', marginBottom: 16, borderLeft: '3px solid var(--teal)', fontSize: 13, color: 'var(--text-muted)' }}>
+              Baseline latency measured from {traces.length} real traces. Click <strong>Run Validation</strong> above to apply the selected fixes and re-measure latency to see the improvement.
+            </div>
+          )}
 
           {/* Per-question table */}
           {vr.questions && (
