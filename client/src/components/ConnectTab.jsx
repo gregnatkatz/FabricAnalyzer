@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { loginPopup, logout, getAccessToken, setClientConfig, getClientConfig, setManualToken } from '../auth/msalConfig';
-import { loadSampleDataset, getWorkspaces, getModels, getAgents, collectData, collectDataDirect, collectLive, collectParallel, setLlmToken, collectXmla, getScenarios, loadScenario, healthCheck } from '../api/proxy';
+import { loadSampleDataset, getWorkspaces, getModels, getAgents, collectData, collectDataDirect, collectLive, collectParallel, setLlmToken, collectXmla, getScenarios, loadScenario, healthCheck, scanAgents } from '../api/proxy';
 
 // Comprehensive setup checklist for Fabric Data Agent testing
 const SETUP_STEPS = [
@@ -135,6 +135,8 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [xmlaSummary, setXmlaSummary] = useState(null);
   const [llmTokenInput, setLlmTokenInput] = useState('');
   const [llmTokenStatus, setLlmTokenStatus] = useState(''); // '', 'set', 'error'
+  const [agentScanResults, setAgentScanResults] = useState(null);
+  const [agentScanLoading, setAgentScanLoading] = useState(false);
 
   const toggleStep = (stepId) => {
     setCheckedSteps(prev => ({ ...prev, [stepId]: !prev[stepId] }));
@@ -371,6 +373,18 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
       const result = await getAgents(workspaceId.trim(), token);
       setAgents(result.agents || []);
       updateSession({ workspaceId: workspaceId.trim() });
+
+      // Auto-scan agents for publish status
+      setAgentScanLoading(true);
+      try {
+        const scanResult = await scanAgents(workspaceId.trim(), token);
+        setAgentScanResults(Array.isArray(scanResult) ? scanResult : []);
+      } catch (scanErr) {
+        console.error('Agent scan failed:', scanErr);
+        setAgentScanResults(null);
+      } finally {
+        setAgentScanLoading(false);
+      }
     } catch (err) {
       setError(`Failed to fetch agents: ${err.message}`);
     } finally {
@@ -1117,6 +1131,75 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
                     Agent ID: {selectedAgentId}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Agent Scan Status Panel */}
+            {agentScanLoading && (
+              <div style={{
+                marginBottom: 12, padding: 12, borderRadius: 8,
+                border: '1px solid var(--border)', background: 'rgba(0,188,212,0.06)',
+              }}>
+                <p style={{ fontSize: 12, color: 'var(--teal)' }}>Scanning agent publish status...</p>
+              </div>
+            )}
+            {agentScanResults && agentScanResults.length > 0 && !agentScanLoading && (
+              <div style={{
+                marginBottom: 12, borderRadius: 8,
+                border: '1px solid var(--border)', background: 'rgba(0,0,0,0.15)',
+                overflow: 'hidden',
+              }}>
+                <div style={{
+                  padding: '8px 12px', background: 'rgba(255,255,255,0.03)',
+                  borderBottom: '1px solid var(--border)',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>
+                    Agent Status ({agentScanResults.filter(a => a.status === 'ready').length}/{agentScanResults.length} published)
+                  </span>
+                </div>
+                {agentScanResults.map((agent, i) => {
+                  const color = agent.status === 'ready' ? 'var(--green)'
+                    : agent.status === 'unpublished' ? '#f59e0b'
+                    : 'var(--red)';
+                  const label = agent.status === 'ready' ? 'PUBLISHED'
+                    : agent.status === 'unpublished' ? 'NOT PUBLISHED'
+                    : 'ERROR';
+                  return (
+                    <div key={i} style={{
+                      padding: '6px 12px', display: 'flex', alignItems: 'center',
+                      gap: 10, borderBottom: '1px solid rgba(255,255,255,0.03)',
+                      fontSize: 12,
+                    }}>
+                      <span style={{
+                        width: 8, height: 8, borderRadius: '50%',
+                        background: color, flexShrink: 0,
+                      }} />
+                      <span style={{ flex: 1, color: 'var(--text)' }}>
+                        {agent.agent_name || 'Unknown'}
+                      </span>
+                      {agent.model_name && (
+                        <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                          {agent.model_name}
+                        </span>
+                      )}
+                      <span style={{
+                        color, fontWeight: 600, fontSize: 10,
+                        padding: '2px 6px', borderRadius: 4,
+                        background: agent.status === 'ready' ? 'rgba(34,197,94,0.1)'
+                          : agent.status === 'unpublished' ? 'rgba(245,158,11,0.1)'
+                          : 'rgba(239,68,68,0.1)',
+                      }}>
+                        {label}
+                      </span>
+                      {agent.status === 'unpublished' && (
+                        <span style={{ fontSize: 10, color: '#f59e0b' }}>
+                          Open in Fabric portal and click Publish
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
 

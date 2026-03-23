@@ -267,6 +267,20 @@ export function collectParallel(payload, accessToken, onProgress, onTrace, onCom
   return controller;
 }
 
+// Scan all agents in workspace — returns publish status for each
+export async function scanAgents(workspaceId, accessToken) {
+  const params = new URLSearchParams({ workspaceId, token: accessToken });
+  return request(`/fabric/scan-agents?${params}`);
+}
+
+// Apply fixes to a Data Agent (dry_run=true for preview, false for live apply)
+export async function applyFixes({ workspaceId, artifactId, token, remediationOutput, dryRun = true }) {
+  return request('/fabric/apply-fixes', {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId, artifactId, token, remediationOutput, dryRun }),
+  });
+}
+
 // SSE stream for validation progress
 export function startValidation(sessionId, fixes, onProgress, onComplete, onError) {
   const params = new URLSearchParams({ sessionId, fixes: fixes.join(',') });

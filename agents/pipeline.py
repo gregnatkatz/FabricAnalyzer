@@ -658,7 +658,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
 
             # Collect results
             try:
-                fv_findings, fv_data = fv_future.result(timeout=300)
+                fv_findings, fv_data = fv_future.result(timeout=180)
                 print(f'[pipeline] finding_validator: {len(fv_findings)} findings (parallel complete)', file=sys.stderr)
                 all_findings.extend(fv_findings)
                 write_findings_to_db(db_path, fv_findings, agent_id_override='finding_validator')
@@ -668,7 +668,7 @@ def run_pipeline(db_path, session_id, agent_filter='all', domain_override='auto'
                 results['finding_validator'] = {'findings': [], 'error': str(e)}
 
             try:
-                rv_findings, rv_data = rv_future.result(timeout=300)
+                rv_findings, rv_data = rv_future.result(timeout=180)
                 print(f'[pipeline] report_validator: {len(rv_findings)} findings (parallel complete)', file=sys.stderr)
                 all_findings.extend(rv_findings)
                 write_findings_to_db(db_path, rv_findings, agent_id_override='report_validator')

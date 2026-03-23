@@ -1,16 +1,19 @@
 # Deterministic Rules Reference
 
-FabricAnalyzer uses 29 deterministic rules that run without any LLM call. These rules provide baseline detection of common Fabric Data Agent latency issues, ensuring the tool produces actionable findings even without Azure AI access.
+FabricAnalyzer uses 31 deterministic rules that run without any LLM call. These rules provide baseline detection of common Fabric Data Agent latency issues, ensuring the tool produces actionable findings even without Azure AI access.
 
 ## Overview
 
 | Agent | Rule Count | Data Source | Detection Scope |
 |-------|-----------|-------------|-----------------|
 | Schema Agent | 11 | `agent_config`, `tables`, `measures`, `columns` | Model structure and configuration |
+| DAX Expression Agent | 10 | `measures.expression` | Measure DAX expression anti-patterns |
 | DAX Agent | 9 | `traces` (per-trace + global) | DAX generation patterns and routing |
 | Execution Agent | 9 | `traces`, `cu_metrics`, `models`, `tables` | Runtime performance and infrastructure |
 
 Combined acceptance test detection rate: **80% (20/25 known issues)**, false positive rate: **15% (4/26)**.
+
+The DAX Expression Agent runs 10 deterministic regex-based rules on `measures.expression` fields, detecting anti-patterns without requiring XMLA access or LLM calls.
 
 ---
 
@@ -106,6 +109,94 @@ Combined acceptance test detection rate: **80% (20/25 known issues)**, false pos
 - **Impact**: 3000ms
 - **Why**: Prep for AI table selection differs from the actual semantic model table count. This causes unpredictable routing as the agent sees a different schema than expected.
 - **Fix**: Align Prep for AI table selection with intended agent scope.
+
+---
+
+## DAX Expression Agent Rules (10)
+
+These rules analyze the `expression` field of each measure in the semantic model using regex pattern matching. They detect DAX anti-patterns that cause latency, incorrect results, or silent failures in Data Agent scenarios.
+
+### Rule EX-1: Nested CALCULATE Depth > 2
+
+- **Condition**: Expression contains more than 2 `CALCULATE(` calls
+- **Severity**: HIGH
+- **Impact**: `depth * 800ms`
+- **Why**: Deep CALCULATE nesting causes exponential filter context expansion. Each nested CALCULATE multiplies the filter evaluation work.
+- **Fix**: Flatten CALCULATE nesting using VAR/RETURN pattern to precompute intermediate results.
+
+### Rule EX-2: Iterator on Large Table
+
+- **Condition**: `SUMX`, `AVERAGEX`, `COUNTX`, `MAXX`, `MINX`, `RANKX`, or `PRODUCTX` scanning a table starting with "Fact" or "Dim"
+- **Severity**: HIGH
+- **Impact**: 2500ms
+- **Why**: Row-by-row iteration on fact/dimension tables is extremely expensive. These functions evaluate an expression for every row.
+- **Fix**: Replace iterator with aggregation function (SUM, AVERAGE) where possible, or add TOPN guard.
+
+### Rule EX-3: Unsafe Division
+
+- **Condition**: Expression uses bare `/` operator without `DIVIDE()` wrapper
+- **Severity**: MEDIUM
+- **Impact**: 0ms (correctness, not latency)
+- **Why**: Bare division risks divide-by-zero errors at runtime, causing query failures.
+- **Fix**: Replace `A / B` with `DIVIDE(A, B, 0)` for divide-by-zero safety.
+
+### Rule EX-4: FILTER on Full Table
+
+- **Condition**: `FILTER(TableName, ...)` where TableName is not VALUES/ALL/ALLSELECTED/DISTINCT
+- **Severity**: HIGH
+- **Impact**: 1800ms
+- **Why**: FILTER scans every row of the table. Direct predicates in CALCULATE push filters down to the engine level.
+- **Fix**: Replace `FILTER(Table, ...)` with `CALCULATE(..., Table[Column] = Value)` for predicate pushdown.
+
+### Rule EX-5: Cartesian Product Risk
+
+- **Condition**: Expression contains `CROSSJOIN(` or `GENERATE(`
+- **Severity**: CRITICAL
+- **Impact**: 5000ms
+- **Why**: CROSSJOIN/GENERATE creates cartesian products that can explode row counts exponentially.
+- **Fix**: Replace with SUMMARIZE or TREATAS for controlled expansion.
+
+### Rule EX-6: ALL() Without ALLSELECTED
+
+- **Condition**: Expression uses `ALL()` inside `CALCULATE()` without `ALLSELECTED()`
+- **Severity**: MEDIUM
+- **Impact**: 0ms (correctness, not latency)
+- **Why**: ALL() removes all filters, ignoring user slicer selections. In Data Agent scenarios, this causes unexpected results.
+- **Fix**: Use ALLSELECTED() instead of ALL() to preserve user filter context.
+
+### Rule EX-7: Excessive Expression Length
+
+- **Condition**: Expression length > 500 characters
+- **Severity**: MEDIUM
+- **Impact**: 600ms
+- **Why**: Complex measures increase NL2DAX generation time as the LLM must reason about longer expressions.
+- **Fix**: Break into smaller sub-measures using VAR/RETURN or helper measures.
+
+### Rule EX-8: Single-Select Dependency
+
+- **Condition**: Expression uses `SELECTEDVALUE()` or `HASONEVALUE()`
+- **Severity**: MEDIUM
+- **Impact**: 0ms (correctness, not latency)
+- **Why**: Measure depends on single-select filter context. In Data Agent scenarios where filter context is dynamic, this may return BLANK unexpectedly.
+- **Fix**: Add fallback logic: `IF(HASONEVALUE(...), SELECTEDVALUE(...), DEFAULT)`.
+
+### Rule EX-9: Hardcoded Date Literals
+
+- **Condition**: Expression contains hardcoded 4-digit year values (e.g., `YEAR([Date]) = 2024`, `[FiscalYear] = 2023`)
+- **Severity**: CRITICAL
+- **Impact**: 9999ms (sentinel — always sorts to top of findings list)
+- **Why**: Once the current year advances past the hardcoded value, the measure silently returns BLANK. Queries succeed with no error, but the Data Agent returns empty results. This is the classic "demo-killer" — a measure that worked last quarter stops working with no visible error.
+- **Fix**: Replace hardcoded years with dynamic expressions: `YEAR(TODAY())`, `YEAR(MAX(DateTable[Date]))`, or a fiscal year parameter. Never use a literal 4-digit year in a measure used beyond the current reporting period.
+- **Example finding**: `Hardcoded date literal(s) in measure "Revenue YTD": 2024`
+
+### Rule EX-10: USERELATIONSHIP Direction Validation
+
+- **Condition**: Expression contains `USERELATIONSHIP(ColA, ColB)`
+- **Severity**: HIGH
+- **Impact**: 4000ms
+- **Why**: USERELATIONSHIP activates an inactive relationship. If the column order is reversed (many-side listed second instead of first), the relationship activates in the wrong direction. Aggregations return incorrect values with no error and no retry — a silent wrong answer.
+- **Fix**: Verify many-side column is listed first: `USERELATIONSHIP(FactTable[FK], DimTable[PK])`. Confirm in Power BI Desktop → Model view → relationship properties.
+- **Example finding**: `USERELATIONSHIP in measure "Sales by Ship Date" — direction validation required`
 
 ---
 
@@ -271,7 +362,7 @@ Every finding from all agents uses this structure:
   "evidence": "Technical evidence supporting the finding",
   "impact_ms": 5000,
   "fix": "Recommended remediation action",
-  "agent_id": "schema | dax | execution | domain_intelligence | adversarial_probe"
+  "agent_id": "schema | dax | dax_expression | execution | domain_intelligence | adversarial_probe"
 }
 ```
 

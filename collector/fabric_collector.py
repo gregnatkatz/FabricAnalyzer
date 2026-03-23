@@ -33,6 +33,133 @@ def api_get(url, token, timeout=30):
     return resp.json()
 
 
+def scan_agents(workspace_id, token):
+    """
+    Enumerate all Data Agents in the workspace and check publish status for each.
+    Probes the chat endpoint to determine if the agent is published and ready.
+
+    Returns list of:
+    {
+      agent_id, agent_name, published: bool,
+      chat_url: str|None, model_id: str|None, model_name: str|None,
+      status: 'ready'|'unpublished'|'error', error: str|None
+    }
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    results = []
+
+    # List all Data Agents in workspace
+    list_url = f"{FABRIC_BASE}/workspaces/{workspace_id}/dataAgents"
+    try:
+        resp = requests.get(list_url, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            agents = resp.json().get("value", [])
+        elif resp.status_code == 404:
+            # Fallback: list all items, filter by type
+            items_url = f"{FABRIC_BASE}/workspaces/{workspace_id}/items"
+            resp2 = requests.get(items_url, headers=headers, timeout=30)
+            resp2.raise_for_status()
+            agents = [
+                item for item in resp2.json().get("value", [])
+                if item.get("type", "").lower() in ("dataagent", "aiskill")
+            ]
+        else:
+            resp.raise_for_status()
+            agents = []
+    except Exception as e:
+        print(f"[scan_agents] Failed to list agents: {e}", file=sys.stderr)
+        return [{"status": "error", "error": str(e), "agent_id": None,
+                 "agent_name": None, "published": False,
+                 "chat_url": None, "model_id": None, "model_name": None}]
+
+    for agent in agents:
+        agent_id = agent.get("id", "")
+        agent_name = agent.get("displayName", agent_id)
+        record = {
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "published": False,
+            "chat_url": None,
+            "model_id": None,
+            "model_name": None,
+            "status": "unpublished",
+            "error": None,
+        }
+
+        # Probe the published chat endpoint
+        chat_url = (
+            f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}"
+            f"/aiskills/{agent_id}/aiassistant/openai"
+        )
+        try:
+            probe = requests.options(chat_url, headers=headers, timeout=10)
+            if probe.status_code in (200, 204, 405):
+                record.update({
+                    "published": True,
+                    "chat_url": chat_url,
+                    "status": "ready",
+                })
+            elif probe.status_code == 404:
+                record["error"] = (
+                    f"'{agent_name}' is not published. "
+                    f"Open in Fabric portal and click Publish."
+                )
+            elif probe.status_code == 401:
+                record.update({
+                    "status": "error",
+                    "error": f"Token lacks permission to access '{agent_name}'.",
+                })
+            else:
+                record.update({
+                    "status": "error",
+                    "error": f"Unexpected status {probe.status_code}",
+                })
+        except requests.exceptions.Timeout:
+            record.update({"status": "error",
+                           "error": "Timeout probing chat endpoint"})
+        except Exception as e:
+            record.update({"status": "error", "error": str(e)})
+
+        # Best-effort: read agent definition to find associated model
+        try:
+            import base64
+            defn_url = (
+                f"{FABRIC_BASE}/workspaces/{workspace_id}"
+                f"/dataAgents/{agent_id}/getDefinition"
+            )
+            defn_resp = requests.post(defn_url, headers=headers, timeout=15)
+            if defn_resp.status_code in (200, 202):
+                parts = defn_resp.json().get(
+                    "definition", {}
+                ).get("parts", [])
+                for part in parts:
+                    try:
+                        import base64
+                        content = json.loads(
+                            base64.b64decode(
+                                part.get("payload", "")
+                            ).decode("utf-8")
+                        )
+                        for ds in content.get("dataSources", []):
+                            if ds.get("type") == "PowerBIDataset":
+                                record["model_id"] = ds.get("datasetId", "")
+                                record["model_name"] = ds.get("datasetName", "")
+                                break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        print(
+            f"[scan_agents] {agent_name}: {record['status'].upper()}"
+            + (f" — {record['error']}" if record.get("error") else ""),
+            file=sys.stderr,
+        )
+        results.append(record)
+
+    return results
+
+
 def collect_cu_metrics(workspace_id, capacity_id, token):
     """Collect Capacity Unit (CU) consumption metrics from real Fabric APIs.
 
@@ -107,6 +234,46 @@ def collect(workspace_id, model_id, token, output_dir='./data', tmp_dir='./tmp')
     """
     if not REQUESTS_AVAILABLE:
         return {'error': 'requests library not available'}
+
+    # Scan all agents before doing anything else
+    print(f"[collect] Scanning agents in workspace {workspace_id}...",
+          file=sys.stderr)
+    agent_scan = scan_agents(workspace_id, token)
+    ready   = [a for a in agent_scan if a["status"] == "ready"]
+    unpub   = [a for a in agent_scan if a["status"] == "unpublished"]
+
+    # If no agents are published at all, fail fast with clear instructions
+    if agent_scan and not ready:
+        return {
+            "error": "no_agents_published",
+            "message": (
+                f"No agents in this workspace are published. "
+                f"Found {len(unpub)} unpublished: "
+                f"{', '.join(a['agent_name'] for a in unpub)}. "
+                f"Open each in the Fabric portal and click Publish."
+            ),
+            "agent_scan": agent_scan,
+        }
+
+    # Check the specific target agent
+    target = next(
+        (a for a in agent_scan
+         if a["agent_id"] == model_id or a["model_id"] == model_id),
+        None,
+    )
+    if target and target["status"] != "ready":
+        return {
+            "error": "target_agent_not_published",
+            "message": (
+                f"'{target['agent_name']}' is not published. "
+                f"Click Publish in the Fabric portal to activate the chat API."
+            ),
+            "agent_scan": agent_scan,
+            "chat_url": None,
+        }
+
+    chat_url = (target["chat_url"] if target
+                else ready[0]["chat_url"] if ready else None)
 
     session_id = f'fabric_{uuid.uuid4().hex[:8]}'
     db_path = os.path.join(output_dir, f'{session_id}.db')
@@ -207,6 +374,8 @@ def collect(workspace_id, model_id, token, output_dir='./data', tmp_dir='./tmp')
         'domain': 'auto',
         'traces': traces,
         'cuMetrics': cu_metrics,
+        'chatUrl': chat_url,
+        'agentScan': agent_scan,
     }
 
 
