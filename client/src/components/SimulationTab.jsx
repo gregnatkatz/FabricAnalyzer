@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { simulate } from '../simulation/mathModel';
 import { FIXES, FIX_KEYS } from '../constants/fixes';
 
@@ -24,7 +24,18 @@ function MonteCarloBar({ p10, p50, p90, maxMs }) {
 }
 
 export default function SimulationTab({ session, updateSession }) {
-  const [activeFixes, setActiveFixes] = useState([]);
+  // Auto-enable all actionable fixes on load so the user immediately sees projected improvements
+  const actionableFixes = FIX_KEYS.filter(k => FIXES[k].key !== 'physician_gov');
+  const [activeFixes, setActiveFixes] = useState(actionableFixes);
+  const [initialized, setInitialized] = useState(false);
+
+  // Re-initialize when session changes (new collection)
+  useEffect(() => {
+    if (session.collectionComplete && !initialized) {
+      setActiveFixes(actionableFixes);
+      setInitialized(true);
+    }
+  }, [session.collectionComplete]);
   const traces = session.traces || [];
   const mc = session.monteCarloResults;
   const cuMetrics = session.cuMetrics || null;
@@ -99,8 +110,8 @@ export default function SimulationTab({ session, updateSession }) {
         </div>
       </div>
 
-      {/* Before vs After Comparison Chart */}
-      {activeFixes.length > 0 && (
+      {/* Before vs After Comparison Chart — always visible */}
+      {
         <div className="glass" style={{ padding: 20, marginBottom: 20 }}>
           <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>Before vs After Comparison</h3>
           <div style={{ display: 'flex', gap: 24, alignItems: 'flex-end', height: 180 }}>
@@ -205,15 +216,38 @@ export default function SimulationTab({ session, updateSession }) {
             </div>
           )}
         </div>
-      )}
+      }
 
       {/* Fix toggles */}
       <div className="glass" style={{ padding: 20 }}>
-        <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Fix Toggles</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Recommended Fixes</h3>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => setActiveFixes(actionableFixes)}
+              style={{
+                padding: '4px 12px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
+                background: activeFixes.length === actionableFixes.length ? 'var(--teal)' : 'transparent',
+                color: activeFixes.length === actionableFixes.length ? '#000' : 'var(--teal)',
+                border: '1px solid var(--teal)', fontWeight: 600,
+              }}
+            >Select All</button>
+            <button
+              onClick={() => setActiveFixes([])}
+              style={{
+                padding: '4px 12px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
+                background: activeFixes.length === 0 ? 'var(--teal)' : 'transparent',
+                color: activeFixes.length === 0 ? '#000' : 'var(--teal)',
+                border: '1px solid var(--teal)', fontWeight: 600,
+              }}
+            >Clear All</button>
+          </div>
+        </div>
         <p style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-muted)', marginBottom: 16 }}>
           Click each fix to toggle it on/off and see its projected impact on latency. Fixes are ordered by estimated reduction.
           Each shows the effort level (Low/Medium/High) and the responsible role (Data Engineer, AI Engineer, or Stakeholder).
-          {activeFixes.length > 0 && ` Currently ${activeFixes.length} fix${activeFixes.length > 1 ? 'es' : ''} selected — combined reduction: -${simResult.reductionPct}%.`}
+          {activeFixes.length > 0 && <strong style={{ color: 'var(--green)' }}> {activeFixes.length} of {actionableFixes.length} fixes selected — combined reduction: -{simResult.reductionPct}%.</strong>}
+          {activeFixes.length === 0 && <span style={{ color: 'var(--amber)' }}> No fixes selected — click "Select All" or individual fixes to see projected improvements.</span>}
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {FIX_KEYS.map(fixKey => {

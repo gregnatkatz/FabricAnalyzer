@@ -35,7 +35,7 @@ const MODEL_ENDPOINTS = {
   'gpt-5.4-pro': {
     endpoint: process.env.LLM_ENDPOINT_GPT54 || process.env.LLM_ENDPOINT,
     apiKey: process.env.LLM_API_KEY_GPT54 || process.env.LLM_API_KEY,
-    useResponsesApi: false,  // Responses API currently timing out — use Chat Completions instead
+    useResponsesApi: true,  // reasoning model — uses /openai/responses instead of chat completions
   },
   'gpt-4o': {
     endpoint: process.env.LLM_ENDPOINT_GPT4O || process.env.LLM_ENDPOINT,
@@ -1403,19 +1403,218 @@ app.post('/api/fabric/collect-live', async (req, res) => {
     res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
   };
 
-  // Question battery — a mix of simple to complex questions for any Data Agent
-  const questions = [
-    { question: 'How many total records are in the primary dataset?', category: 'count' },
-    { question: 'What are the distinct categories or types in the data?', category: 'listing' },
-    { question: 'Show me the top 10 items by volume or count', category: 'ranking' },
-    { question: 'What is the average value across the main metric?', category: 'aggregation' },
-    { question: 'Show me a breakdown by the primary grouping dimension', category: 'aggregation' },
-    { question: 'Which items have the highest rates or percentages?', category: 'ranking' },
-    { question: 'What is the trend over the most recent time period?', category: 'trend' },
-    { question: 'Show me records that exceed a threshold or target', category: 'filtering' },
-    { question: 'Compare performance across the top 5 groups', category: 'comparison' },
-    { question: 'What patterns or outliers exist in the data?', category: 'analysis' },
-  ];
+  // ── Dynamic question generation ──
+  // Step 0: Fetch the Data Agent's semantic model metadata from Fabric API,
+  // then use gpt-5.4 to generate 50 domain-specific questions based on the actual schema.
+  sendEvent('status', { message: 'Examining Data Agent semantic model and dataset schema...' });
+  console.log(`[live-collect] Fetching semantic model metadata for workspace ${workspaceId}...`);
+
+  let schemaContext = '';
+  try {
+    // Fetch semantic models (datasets) in the workspace
+    const dsResp = await fetch(
+      `https://api.fabric.microsoft.com/v1/workspaces/${workspaceId}/semanticModels`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (dsResp.ok) {
+      const dsData = await dsResp.json();
+      const models = dsData.value || [];
+      console.log(`[live-collect] Found ${models.length} semantic models in workspace`);
+
+      // Try to find a semantic model that matches the agent name or get all of them
+      const schemaDetails = [];
+      for (const sm of models.slice(0, 5)) { // Limit to first 5 to avoid too many API calls
+        try {
+          // Fetch table/column/measure metadata via the semantic model definition
+          const defResp = await fetch(
+            `https://api.fabric.microsoft.com/v1/workspaces/${workspaceId}/semanticModels/${sm.id}/definition`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (defResp.ok) {
+            const defData = await defResp.json();
+            schemaDetails.push({ name: sm.name || sm.displayName, id: sm.id, definition: defData });
+            console.log(`[live-collect] Got definition for semantic model: ${sm.name || sm.displayName}`);
+          } else {
+            // Fallback: try the tables endpoint
+            const tabResp = await fetch(
+              `https://api.powerbi.com/v1.0/myorg/groups/${workspaceId}/datasets/${sm.id}/tables`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            if (tabResp.ok) {
+              const tabData = await tabResp.json();
+              schemaDetails.push({ name: sm.name || sm.displayName, id: sm.id, tables: tabData.value || [] });
+              console.log(`[live-collect] Got tables for semantic model: ${sm.name || sm.displayName} — ${(tabData.value || []).length} tables`);
+            }
+          }
+        } catch (smErr) {
+          console.log(`[live-collect] Could not fetch details for model ${sm.name}: ${smErr.message}`);
+        }
+      }
+
+      // Also try fetching lakehouses for additional context
+      try {
+        const lhResp = await fetch(
+          `https://api.fabric.microsoft.com/v1/workspaces/${workspaceId}/lakehouses`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (lhResp.ok) {
+          const lhData = await lhResp.json();
+          const lakehouses = lhData.value || [];
+          if (lakehouses.length > 0) {
+            schemaContext += `\nLakehouses in workspace: ${lakehouses.map(l => l.displayName || l.name).join(', ')}\n`;
+            // Try to get tables from first lakehouse
+            for (const lh of lakehouses.slice(0, 2)) {
+              try {
+                const ltResp = await fetch(
+                  `https://api.fabric.microsoft.com/v1/workspaces/${workspaceId}/lakehouses/${lh.id}/tables`,
+                  { headers: { Authorization: `Bearer ${token}` } }
+                );
+                if (ltResp.ok) {
+                  const ltData = await ltResp.json();
+                  const tables = ltData.data || ltData.value || [];
+                  schemaContext += `\nLakehouse "${lh.displayName || lh.name}" tables:\n`;
+                  for (const t of tables.slice(0, 30)) {
+                    schemaContext += `  - ${t.name} (format: ${t.format || 'unknown'}, location: ${t.location || 'n/a'})\n`;
+                  }
+                }
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+
+      // Build schema context string for LLM
+      for (const sm of schemaDetails) {
+        schemaContext += `\nSemantic Model: "${sm.name}"\n`;
+        if (sm.definition) {
+          // Parse TMDL or JSON model definition
+          const def = sm.definition;
+          if (def.parts) {
+            // TMDL format — extract table/column/measure info from parts
+            for (const part of def.parts) {
+              if (part.path && part.payload) {
+                const decoded = Buffer.from(part.payload, 'base64').toString('utf-8');
+                if (decoded.length < 5000) {
+                  schemaContext += `  [${part.path}]:\n${decoded.substring(0, 2000)}\n`;
+                } else {
+                  schemaContext += `  [${part.path}]: (${decoded.length} chars, showing first 2000)\n${decoded.substring(0, 2000)}\n`;
+                }
+              }
+            }
+          }
+          if (def.definition) {
+            schemaContext += `  Definition: ${JSON.stringify(def.definition).substring(0, 3000)}\n`;
+          }
+        }
+        if (sm.tables) {
+          for (const t of sm.tables) {
+            schemaContext += `  Table: ${t.name}\n`;
+            if (t.columns) {
+              for (const c of t.columns.slice(0, 20)) {
+                schemaContext += `    Column: ${c.name} (${c.dataType})\n`;
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (schemaErr) {
+    console.log(`[live-collect] Schema fetch error (non-fatal): ${schemaErr.message}`);
+  }
+
+  // Generate 50 domain-specific questions using gpt-5.4
+  let questions = [];
+  sendEvent('status', { message: 'Generating 50 domain-specific questions based on schema analysis...' });
+  console.log(`[live-collect] Generating dynamic questions via LLM. Schema context length: ${schemaContext.length} chars`);
+
+  try {
+    const modelConfig = getModelConfig('gpt-5.4');
+    const llmEndpoint = modelConfig.endpoint;
+    const llmApiKey = modelConfig.apiKey;
+    const base = llmEndpoint.replace(/\/openai\/v1\/?$/, '').replace(/\/+$/, '');
+    const llmUrl = `${base}/openai/deployments/gpt-5.4/chat/completions?api-version=2025-01-01-preview`;
+
+    const questionGenPrompt = `You are generating test questions for a Microsoft Fabric Data Agent named "${agentName}".
+${agentInstructions ? `\nAgent Instructions:\n${agentInstructions.substring(0, 3000)}` : ''}
+${schemaContext ? `\nData Schema Context:\n${schemaContext.substring(0, 8000)}` : ''}
+
+Generate exactly 50 domain-specific questions that a real user would ask this Data Agent.
+The questions should exercise the actual tables, columns, measures, and relationships in the dataset.
+
+Requirements:
+- Questions MUST reference specific table names, column names, measure names, or domain concepts visible in the schema
+- Mix of complexity: 10 simple counts/lookups, 10 aggregations, 10 rankings/comparisons, 10 trend/time-based, 10 complex multi-step analytics
+- Each question should be realistic — something a healthcare analyst, data engineer, or executive would actually ask
+- Questions should vary in expected DAX complexity (simple COUNTROWS to complex CALCULATETABLE with multiple filters)
+- Include questions that might stress-test the agent (ambiguous queries, queries requiring joins across tables, edge cases)
+
+Return ONLY a JSON array of objects with "question" and "category" fields.
+Categories: count, listing, aggregation, ranking, trend, filtering, comparison, analysis, complex, edge_case
+
+Example format:
+[{"question": "What is the average Length of Stay for patients admitted through the Emergency Department?", "category": "aggregation"}, ...]`;
+
+    const llmResp = await fetch(llmUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': llmApiKey,
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.4',
+        messages: [
+          { role: 'system', content: 'You generate test questions for data agents. Return ONLY valid JSON arrays. No markdown, no explanation.' },
+          { role: 'user', content: questionGenPrompt },
+        ],
+        max_completion_tokens: 8000,
+        temperature: 0.7,
+      }),
+    });
+
+    if (llmResp.ok) {
+      const llmData = await llmResp.json();
+      const content = llmData.choices?.[0]?.message?.content || '';
+      console.log(`[live-collect] LLM question generation response length: ${content.length}`);
+
+      // Parse JSON — handle markdown code blocks
+      let cleaned = content.trim();
+      if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        questions = parsed.slice(0, 50).map(q => ({
+          question: String(q.question || q.q || ''),
+          category: String(q.category || q.cat || 'analysis'),
+        })).filter(q => q.question.length > 5);
+        console.log(`[live-collect] Generated ${questions.length} dynamic domain-specific questions`);
+      }
+    } else {
+      const errText = await llmResp.text();
+      console.log(`[live-collect] LLM question generation failed: ${llmResp.status} — ${errText.substring(0, 200)}`);
+    }
+  } catch (qgenErr) {
+    console.log(`[live-collect] Question generation error (falling back to defaults): ${qgenErr.message}`);
+  }
+
+  // Fallback to generic questions if dynamic generation fails
+  if (questions.length < 10) {
+    console.log(`[live-collect] Using fallback generic questions (dynamic generation produced ${questions.length})`);
+    questions = [
+      { question: 'How many total records are in the primary dataset?', category: 'count' },
+      { question: 'What are the distinct categories or types in the data?', category: 'listing' },
+      { question: 'Show me the top 10 items by volume or count', category: 'ranking' },
+      { question: 'What is the average value across the main metric?', category: 'aggregation' },
+      { question: 'Show me a breakdown by the primary grouping dimension', category: 'aggregation' },
+      { question: 'Which items have the highest rates or percentages?', category: 'ranking' },
+      { question: 'What is the trend over the most recent time period?', category: 'trend' },
+      { question: 'Show me records that exceed a threshold or target', category: 'filtering' },
+      { question: 'Compare performance across the top 5 groups', category: 'comparison' },
+      { question: 'What patterns or outliers exist in the data?', category: 'analysis' },
+    ];
+  }
+
+  sendEvent('status', { message: `Ready to collect ${questions.length} domain-specific questions` });
 
   const traces = [];
   // Use the OpenAI Assistant API pattern — this is the correct Fabric Data Agent endpoint
