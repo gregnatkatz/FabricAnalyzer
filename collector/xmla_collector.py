@@ -69,6 +69,18 @@ SELECTCOLUMNS(
 )
 """
 
+# DMV Query 4: Column reference counts
+# Counts how many measures/calculated columns reference each model column.
+# Columns with 0 references are orphaned — pure overhead.
+COLUMN_REF_COUNT_DMV = """
+EVALUATE
+SUMMARIZECOLUMNS(
+  INFO.CALCDEPENDENCY()[REFERENCED_OBJECT],
+  INFO.CALCDEPENDENCY()[REFERENCED_TABLE],
+  "RefCount", COUNTROWS(INFO.CALCDEPENDENCY())
+)
+"""
+
 
 # ---------------------------------------------------------------------------
 # Strategy 1: DAX INFO functions via executeQueries API
@@ -328,6 +340,7 @@ def store_xmla_data(db_path, model_id, column_stats, relationship_stats):
             cardinality INTEGER,
             data_size_mb REAL,
             segment_count INTEGER,
+            reference_count INTEGER DEFAULT -1,
             captured_at TEXT
         );
         CREATE TABLE IF NOT EXISTS relationship_stats (
@@ -347,10 +360,11 @@ def store_xmla_data(db_path, model_id, column_stats, relationship_stats):
     db.execute('DELETE FROM relationship_stats WHERE model_id = ?', (model_id,))
 
     for i, cs in enumerate(column_stats):
+        ref_count = cs.get('reference_count', -1)
         db.execute(
-            'INSERT INTO column_stats VALUES (?, ?, ?, ?, ?, ?, ?, datetime("now"))',
+            'INSERT INTO column_stats VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime("now"))',
             (f'cs_{model_id}_{i}', model_id, cs['table_name'], cs['column_name'],
-             cs['cardinality'], cs['data_size_mb'], cs['segment_count']),
+             cs['cardinality'], cs['data_size_mb'], cs['segment_count'], ref_count),
         )
 
     for i, rs in enumerate(relationship_stats):
@@ -374,6 +388,8 @@ def run_xmla_collection(workspace_id, model_id, token, db_path):
     rel_stats = []
     measure_deps = []
 
+    ref_counts = {}  # key: "TableName.ColumnName" → count
+
     # Strategy 1: Try DAX INFO functions via executeQueries
     try:
         print('[XMLA] Trying Strategy 1: DAX INFO functions...', file=sys.stderr)
@@ -382,6 +398,19 @@ def run_xmla_collection(workspace_id, model_id, token, db_path):
             print(f'[XMLA] Strategy 1 succeeded: {len(col_stats)} column stats', file=sys.stderr)
             rel_stats = collect_relationship_stats_dmv(workspace_id, model_id, token)
             measure_deps = collect_measure_deps_dmv(workspace_id, model_id, token)
+
+            # Collect column reference counts from CALCDEPENDENCY
+            try:
+                ref_result = xmla_query(workspace_id, model_id, COLUMN_REF_COUNT_DMV, token)
+                for row in ref_result:
+                    tbl = row.get('REFERENCED_TABLE', '') or row.get('[REFERENCED_TABLE]', '')
+                    col = row.get('REFERENCED_OBJECT', '') or row.get('[REFERENCED_OBJECT]', '')
+                    cnt = row.get('RefCount', 0) or row.get('[RefCount]', 0)
+                    if tbl and col:
+                        ref_counts[f'{tbl}.{col}'] = int(cnt)
+            except Exception as e:
+                print(f'[xmla] Column ref count query failed: {e}', file=sys.stderr)
+                # Non-fatal — ref_counts stays empty, XM-7 won't fire
     except Exception as e:
         print(f'[XMLA] Strategy 1 failed: {e}', file=sys.stderr)
 
@@ -397,6 +426,11 @@ def run_xmla_collection(workspace_id, model_id, token, db_path):
             print(f'[XMLA] Strategy 2 failed: {e}', file=sys.stderr)
 
     print(f'[XMLA] Final: {len(col_stats)} columns, {len(rel_stats)} relationships, {len(measure_deps)} deps', file=sys.stderr)
+
+    # Attach reference_count to each column stat
+    for cs in col_stats:
+        ref_key = f"{cs['table_name']}.{cs['column_name']}"
+        cs['reference_count'] = ref_counts.get(ref_key, -1)
 
     if col_stats or rel_stats:
         store_xmla_data(db_path, model_id, col_stats, rel_stats)

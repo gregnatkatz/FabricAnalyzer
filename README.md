@@ -10,7 +10,7 @@
 
 ### Fabric Workspace Assets
 
-The analyzer ships with **10 real healthcare Data Agents** deployed in a Fabric workspace, each with intentionally bad configurations to test the analyzer's detection capabilities:
+The analyzer includes **10 real healthcare Data Agents** deployed in a Fabric workspace, each with intentionally bad configurations to test the analyzer's detection capabilities:
 
 | # | Semantic Model | Data Agent | Domain | Tables | Anti-Patterns |
 |---|---------------|------------|--------|--------|---------------|
@@ -32,7 +32,7 @@ The analyzer ships with **10 real healthcare Data Agents** deployed in a Fabric 
 
 - **Mixed Model AI Pipeline** — GPT-5.4 for validators + DeepSeek V3.2 Speciale for analysis agents, with per-agent model selection and automatic retry with fallback
 - **Smart Retry Logic** — 2-attempt retry for all models (180s timeout each), gpt-5.4 empty content detection with DeepSeek fallback, cold-start warm-up for parallel collection
-- **29 Deterministic Rules + 500 RAG Patterns** — Schema, DAX, execution, XMLA, and DAX expression analysis with ChromaDB knowledge base
+- **38 Deterministic Rules + 500 RAG Patterns** — Schema, DAX, execution, XMLA (7 rules incl. orphaned column detection), and DAX expression analysis with ChromaDB knowledge base
 - **PDF Report Export** — Puppeteer-rendered PDF with executive summary, root cause ranking, before/after comparison, CU cost correlation, and fix recommendations
 - **Monte Carlo Simulation** — 500-iteration client-side math model with instant fix toggle projections
 - **CU Cost Correlation** — AI CU, Query CU, Throttle Events, P50/P95 latency with estimated CU savings
@@ -470,7 +470,7 @@ The tool includes a comprehensive catalog of **500 known latency issues** across
 | Monitoring | 20 | No alerting, no baseline, no trend analysis |
 | Cross-Agent | 20 | Inconsistent configs, routing confusion, drift |
 
-## 29 Deterministic Rules (Pre-Checks)
+## 38 Deterministic Rules (Pre-Checks)
 
 ### Schema (11 rules)
 - Instruction char limit exceeded (>4800) — CRITICAL
@@ -506,6 +506,15 @@ The tool includes a comprehensive catalog of **500 known latency issues** across
 - High CU throttling (>50 events) — CRITICAL
 - V-Order not confirmed for Direct Lake — MEDIUM
 - Direct Lake framing risk — HIGH
+
+### XMLA (7 rules)
+- High cardinality column (>1M distinct) — HIGH
+- Large column storage (>50 MB) — HIGH
+- Bidirectional cross-filter — HIGH
+- Excessive inactive relationships (>2) — MEDIUM
+- High segment count (>10) — MEDIUM
+- Many-to-many relationship — CRITICAL
+- Orphaned column (0 measure references) — HIGH / MEDIUM (key-like)
 
 ## Acceptance Test Results
 
