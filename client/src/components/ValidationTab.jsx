@@ -161,7 +161,7 @@ export default function ValidationTab({ session, updateSession }) {
           )}
 
           {/* Per-question table */}
-          {vr.questions && (
+          {vr?.questions && (
             <div className="glass" style={{ padding: 20, marginBottom: 20 }}>
               <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Per-Question Breakdown</h4>
               <div style={{ overflowX: 'auto' }}>
@@ -194,7 +194,7 @@ export default function ValidationTab({ session, updateSession }) {
           )}
 
           {/* Resolution status */}
-          {vr.resolutions && (
+          {vr?.resolutions && (
             <div className="glass" style={{ padding: 20 }}>
               <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Finding Resolution Status</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
