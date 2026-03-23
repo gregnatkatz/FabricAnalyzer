@@ -244,7 +244,27 @@ app.post('/api/agent', async (req, res) => {
         });
         clearTimeout(timer);
         const text = await fetchResp.text();
-        console.log('[LLM] Got response, length:', text.length);
+        console.log('[LLM] Got response, length:', text.length, 'status:', fetchResp.status);
+        // Treat empty response body as retryable (DeepSeek sometimes returns 0-length body)
+        if (!text || text.length === 0) {
+          console.warn(`[LLM] Attempt ${attempt + 1} got empty response body from ${model} — retrying`);
+          lastError = new Error(`Empty response body from ${model}`);
+          if (attempt < timeouts.length - 1) {
+            console.log(`[LLM] Retrying ${model}...`);
+            await new Promise(r => setTimeout(r, 2000)); // Brief delay before retry
+          }
+          continue;
+        }
+        // Treat HTTP 5xx as retryable
+        if (fetchResp.status >= 500) {
+          console.warn(`[LLM] Attempt ${attempt + 1} got HTTP ${fetchResp.status} from ${model} — retrying`);
+          lastError = new Error(`HTTP ${fetchResp.status} from ${model}: ${text.substring(0, 200)}`);
+          if (attempt < timeouts.length - 1) {
+            console.log(`[LLM] Retrying ${model}...`);
+            await new Promise(r => setTimeout(r, 2000));
+          }
+          continue;
+        }
         data = JSON.parse(text);
         break;  // Success — exit retry loop
       } catch (fetchErr) {
@@ -253,7 +273,8 @@ app.post('/api/agent', async (req, res) => {
         const reason = fetchErr.name === 'AbortError' ? `timeout ${timeoutSec}s` : fetchErr.message?.substring(0, 100);
         console.warn(`[LLM] Attempt ${attempt + 1} failed for ${model} (${reason})`);
         if (attempt < timeouts.length - 1) {
-          console.log(`[LLM] Retrying ${model} with longer timeout (${timeouts[attempt + 1]}s)...`);
+          console.log(`[LLM] Retrying ${model}...`);
+          await new Promise(r => setTimeout(r, 2000));
         }
       }
     }
