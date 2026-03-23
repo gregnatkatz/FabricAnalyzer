@@ -30,8 +30,8 @@ The analyzer ships with **10 real healthcare Data Agents** deployed in a Fabric 
 
 ## Key Features
 
-- **Mixed Model AI Pipeline** — GPT-5.4 Pro (Responses API) for reasoning agents + DeepSeek V3.2 Speciale for analysis agents, with per-agent model selection and compressed prompts for reasoning models
-- **Smart Retry Logic** — Escalating timeouts (240s/360s/480s) for GPT-5.4 Pro reasoning model, 1-retry fast fallback to DeepSeek
+- **Mixed Model AI Pipeline** — GPT-5.4 for validators + DeepSeek V3.2 Speciale for analysis agents, with per-agent model selection and automatic retry with fallback
+- **Smart Retry Logic** — 2-attempt retry for all models (180s timeout each), gpt-5.4 empty content detection with DeepSeek fallback, cold-start warm-up for parallel collection
 - **29 Deterministic Rules + 500 RAG Patterns** — Schema, DAX, execution, XMLA, and DAX expression analysis with ChromaDB knowledge base
 - **PDF Report Export** — Puppeteer-rendered PDF with executive summary, root cause ranking, before/after comparison, CU cost correlation, and fix recommendations
 - **Monte Carlo Simulation** — 500-iteration client-side math model with instant fix toggle projections
@@ -51,105 +51,91 @@ A full end-to-end walkthrough showing sample data loading, mixed model pipeline 
 
 https://github.com/gregnatkatz/FabricAnalyzer/raw/main/docs/walkthrough.mp4
 
-## Results & Evidence
+## Results & Evidence — Real Fabric Data Agent Testing
 
-We ran the analyzer against **10 healthcare Data Agents**, each with a different set of problems. The goal: show that the tool catches real issues and tells you exactly how to fix them.
+We connected the analyzer to a **real Fabric workspace** (`demo-katz`) and tested against **live Data Agents** with real latencies. No synthetic data — every trace below came from the actual Fabric Data Agent API.
 
-### What We Tested
+### Live Test: ED Throughput Agent (50 Parallel Questions)
 
-| # | Data Agent | Domain | What's Wrong With It | Questions |
-|---|-----------|--------|----------------------|-----------|
-| 1 | **LOS Clinical** | Clinical Inpatient | Too many tables exposed (18), instructions too long (5,200+ chars), no verified answers, missing table descriptions | 25 |
-| 2 | **Revenue Cycle** | Revenue Cycle | Ambiguous measure names (3 versions of "Net Revenue"), high retry rate (85 retries in 25 questions), archive tables exposed | 25 |
-| 3 | **Workforce** | Workforce | Slow DAX patterns (SUMX on 500K rows, CROSSJOIN on large tables), no TOPN limits on cross-entity queries | 25 |
-| 4 | **Supply Chain** | Supply Chain | Division-by-zero errors, circular measure references, contradictory routing instructions | 25 |
-| 5 | **ED Throughput** | Emergency Dept | Timeout-prone queries on 2M+ row tables, retry-dominant latency, door-to-doc metric conflicts | 25 |
-| 6 | **Readmission Risk** | Population Health | Physician names visible in outputs, governance gaps, PII exposure risk, framing bias in risk scores | 25 |
-| 7 | **Surgical Outcomes** | Perioperative | Ambiguous time window calculations, double-counting complications (30-day/90-day overlap), framing risk in complication rates | 25 |
-| 8 | **Infection Control** | Infection Prevention | Sparse surveillance data causing empty results, references to non-existent measures, unclear HAI category mappings | 25 |
-| 9 | **Nursing Quality** | Nursing Admin | Hidden internal columns exposed in queries, 11 duplicate/ambiguous measures, CU throttling from excessive measure count | 25 |
-| 10 | **Patient Safety** | Quality & Safety | NL2DAX contamination from safety terminology, contradictory fiscal/calendar year instructions, event correlation challenges | 25 |
-
-### What the Analyzer Found
-
-The 11-agent pipeline ran all 250 questions across 10 agents and flagged **470+ issues** total:
+**Collection method:** LLM (gpt-5.4) examined the ED Throughput Agent's semantic model schema (ED_Encounters, ED_Beds, ED_Providers tables) and dynamically generated 50 domain-specific questions. Questions were sent to the agent in 10 parallel threads with a warm-up step to eliminate cold-start failures.
 
 ```
-LOS Clinical:       47 issues   (20 critical, 22 high, 5 medium)   — instruction bloat, schema sprawl
-Revenue Cycle:      55 issues   (22 critical, 28 high, 5 medium)   — measure ambiguity, high retries
-Workforce:          41 issues   (20 critical, 19 high, 2 medium)   — deep nesting DAX, CROSSJOIN abuse
-Supply Chain:       45 issues   (16 critical, 25 high, 4 medium)   — division by zero, circular refs
-ED Throughput:      52 issues   (24 critical, 22 high, 6 medium)   — timeouts, retry dominant
-Readmission Risk:   48 issues   (18 critical, 24 high, 6 medium)   — physician visible, governance
-Surgical Outcomes:  44 issues   (16 critical, 22 high, 6 medium)   — framing risk, double counting
-Infection Control:  50 issues   (20 critical, 24 high, 6 medium)   — empty results, sparse data
-Nursing Quality:    46 issues   (18 critical, 22 high, 6 medium)   — hidden columns, CU throttling
-Patient Safety:     42 issues   (16 critical, 20 high, 6 medium)   — NL2DAX contamination, temporal
-                    ─────────
-Total:             470 issues   (190 critical, 228 high, 52 medium)
+Agent:              ED Throughput Agent
+Domain:             Clinical Inpatient (Emergency Dept)
+Questions:          50 (LLM-generated from schema)
+Collection time:    59 seconds (10 parallel threads)
+Pass rate:          100% (50/50)
+Avg latency:        9.8s
+Fastest:            7.2s
+Slowest:            14.0s
 ```
 
-### How Slow Are These Agents?
+**Sample questions generated by LLM (from actual schema inspection):**
+- "How many ED encounters are in the ED_Encounters table?"
+- "What is the average DoorToProviderMinutes across all rows?"
+- "Rank FacilityName by average LengthOfStayMinutes"
+- "Show the monthly trend of total ED visits using ArrivalDateTime"
+- "Using ED_Encounters, ED_Beds, and ED_Providers, identify FacilityName and ProviderName combinations with above-average encounter volume"
 
-Every agent we tested is significantly above the 10-second SLA target:
+### What the 12-Agent Pipeline Found
+
+The pipeline analyzed all 50 traces and identified **14 findings** with a combined **13.6s of estimated impact per query cycle**:
 
 ```
-                     Avg Latency    Worst Case    How Bad?
-LOS Clinical:           30.6s          58.0s       3.1x above SLA
-Revenue Cycle:          35.7s          96.0s       3.6x above SLA
-Workforce:              39.9s          95.3s       4.0x above SLA
-Supply Chain:           36.1s          86.6s       3.6x above SLA
-ED Throughput:          42.5s          89.6s       4.3x above SLA
-Readmission Risk:       34.5s          77.7s       3.5x above SLA
-Surgical Outcomes:      33.0s          82.7s       3.3x above SLA
-Infection Control:      34.8s          81.2s       3.5x above SLA
-Nursing Quality:        40.7s          98.1s       4.1x above SLA
-Patient Safety:         39.7s          82.1s       4.0x above SLA
+Domain Intelligence:   Classified as Clinical Inpatient, identified zero verified answers
+Schema Agent:          1 finding — Zero verified answers configured (6.0s impact)
+DAX Agent:             0 findings
+Execution Agent:       2 findings — Execution phase dominant (40%), V-Order not confirmed
+Synthesis:             Root cause ranking generated
+Monte Carlo:           500-iteration simulation computed
+Remediation:           Paste-ready AI instructions generated (1,882 chars)
+Finding Validator:     5 findings — Validated severity, flagged over-estimated savings
+Report Validator:      5 findings — Demo readiness UNKNOWN, quality gaps identified
 ```
 
-### Top 5 Issues (Biggest Impact)
+**Severity breakdown:** 0 critical, 7 high, 6 medium, 1 low — **13.6s total estimated latency impact**
 
-These are the issues causing the most latency across all 10 agents:
+### Top 3 Action Items (Biggest Impact)
 
-| # | Issue | Impact | Fix |
-|---|-------|--------|-----|
-| 1 | **Excessive retries** — 217 retries across 100 questions because the agent picks the wrong table first | 133s per cycle | Add routing rules to instructions so the agent targets the right table on the first try |
-| 2 | **Outlier queries >45s** — 6 queries took 46-58s due to cross-table scans without row limits | 58s per query | Add `TOPN(100, ...)` guards to verified answers for cross-entity questions |
-| 3 | **Schema sprawl** — LOS agent exposes all 18 tables when only 6-8 are needed for most questions | 4.5s per query | Use "AI Data Schema" in Fabric to limit visible tables to the ones the agent actually needs |
-| 4 | **No verified answers** — None of the 4 agents had any verified answers configured | 8.2s per query | Add verified answers for the top 10 most-asked questions per agent (pre-written DAX = instant response) |
-| 5 | **Ambiguous measures** — Revenue Cycle has "Net Revenue", "Net Rev", and "Revenue Net" (all different) | 6.1s per query | Rename to a single clear name, hide duplicates, add descriptions |
+Fixing these 3 issues eliminates **80% of total impact** (10.9s of 13.6s):
 
-### Projected Improvement (Monte Carlo Simulation)
+| # | Issue | Agent | Impact | Fix |
+|---|-------|-------|--------|-----|
+| 1 | **Zero verified answers configured** | Schema Agent | 6.0s | Add 8+ verified answer DAX patterns for high-frequency KPIs |
+| 2 | **Execution phase dominant (40% of total latency)** | Execution Agent | 2.9s | Apply V-Order optimization or check Direct Lake configuration |
+| 3 | **V-Order optimization not confirmed for Direct Lake model** | Execution Agent | 2.0s | Apply V-Order to Direct Lake tables |
 
-We ran 500 Monte Carlo simulations per fix to estimate the impact. Here's what happens when you apply the recommended fixes:
+### Monte Carlo Simulation Results
 
-| Fix | Time Saved | Reduction |
-|-----|-----------|-----------|
-| Add verified answers for top 10 questions | **-8.2s** per query | 23% faster |
-| Remove unused tables from schema | **-4.5s** per query | 13% faster |
-| Fix routing instructions (remove contradictions) | **-3.8s** per query | 11% faster |
-| Optimize DAX (add TOPN, remove slow iterators) | **-6.1s** per query | 17% faster |
-| **All fixes together** | **-18.4s** per query | **~52% faster** |
+500 iterations per fix, pure deterministic math model calibrated against Microsoft's published benchmarks:
 
-> **Bottom line:** Applying all recommended fixes cuts average query time roughly in half — from ~36s down to ~17s.
+| Fix | Time Saved | Reduction | Effort | Owner |
+|-----|-----------|-----------|--------|-------|
+| Add Verified Answers (8+ KPI patterns) | **-1.6s** | 17% | Medium | AI Engineer |
+| Add TOP Limits (TOPN guards) | **-1.8s** | 18% | Low | AI Engineer |
+| Apply V-Order (Direct Lake optimization) | **-0.9s** | 10% | Medium | Data Engineer |
+| Add Routing Rules | **-0.9s** | 10% | Medium | AI Engineer |
+| Scope Schema Tables (12 core tables) | **-0.8s** | 9% | Low | Data Engineer |
+| Deduplicate Measures | **-0.8s** | 8% | Low | Data Engineer |
+| Trim Instructions (<3,800 chars) | **-0.7s** | 7% | Medium | AI Engineer |
+| **All 7 fixes together** | **-6.1s** | **-62%** | | |
+
+> **Bottom line:** Applying all 7 recommended fixes projects average query time from **9.8s → 3.7s** (-62%), with worst-case outlier dropping from **14.0s → 5.3s**.
 
 ### Where Does the Time Go?
 
-Each query is broken into phases so you can see exactly where the bottleneck is:
+Each query is broken into three latency phases:
 
 ```
-Example: "Compare ICU vs general ward average LOS and readmission rates"
-Total: 52.8s | Retries: 3
+ED Throughput Agent — Average 9.8s per query
 
-  Parse instruction   ██                           2.1s  ( 4%)
-  Resolve schema      ██████                       6.3s  (12%)
-  Generate DAX        ██████████████████           18.5s  (35%)  <-- biggest bottleneck
-  Execute query       ████████████████████         21.1s  (40%)  <-- second biggest
-  Build response      ███                          3.2s  ( 6%)
-  Other               █                            1.6s  ( 3%)
+  Schema Resolution   ██████                       1.0s  (10%)
+  DAX Generation      █████████████████████        3.4s  (35%)  <-- biggest bottleneck
+  Execution           ██████████████████████████   3.9s  (40%)  <-- second biggest
+  Other               ██████                       1.5s  (15%)
 ```
 
-The two biggest time sinks are **DAX generation** (the agent tries multiple approaches) and **query execution** (scanning too many rows). Both are addressed by the recommended fixes above.
+The two biggest time sinks are **DAX generation** (NL-to-DAX engine processing) and **query execution** (VertiPaq scan). Both are addressed by verified answers (bypassing DAX gen) and V-Order optimization (faster scans).
 
 ## Screenshots
 

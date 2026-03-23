@@ -48,6 +48,8 @@ export default function TracesTab({ session }) {
   }
 
   const avgLatency = traces.length > 0 ? traces.reduce((s, t) => s + t.total_ms, 0) / traces.length : 0;
+  const minLatency = traces.length > 0 ? Math.min(...traces.map(t => t.total_ms)) : 0;
+  const maxLatency = traces.length > 0 ? Math.max(...traces.map(t => t.total_ms)) : 0;
   const retryCount = traces.filter(t => t.retries > 0).length;
   const slowCount = traces.filter(t => t.total_ms > 20000).length;
   const failCount = traces.filter(t => t.pass_fail === 'fail').length;
@@ -93,12 +95,23 @@ export default function TracesTab({ session }) {
       )}
 
       {/* Summary cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 12 }}>
         {[
           { label: 'Domain', value: DOMAIN_LABELS[session.domain] || session.domain || '—', color: 'var(--blue)' },
-          { label: 'Avg Latency', value: avgLatency > 0 ? `${(avgLatency / 1000).toFixed(1)}s` : '—', color: 'var(--teal)' },
           { label: 'Traces', value: traces.length, color: 'var(--text)' },
           { label: 'Retries', value: retryCount, color: retryCount > 0 ? 'var(--amber)' : 'var(--green)' },
+        ].map(card => (
+          <div key={card.label} className="glass metric-card">
+            <div className="value" style={{ color: card.color }}>{card.value}</div>
+            <div className="label">{card.label}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
+        {[
+          { label: 'Fastest', value: minLatency > 0 ? `${(minLatency / 1000).toFixed(1)}s` : '—', color: 'var(--green)' },
+          { label: 'Avg Latency', value: avgLatency > 0 ? `${(avgLatency / 1000).toFixed(1)}s` : '—', color: 'var(--teal)' },
+          { label: 'Slowest', value: maxLatency > 0 ? `${(maxLatency / 1000).toFixed(1)}s` : '—', color: maxLatency > 30000 ? 'var(--red)' : 'var(--amber)' },
         ].map(card => (
           <div key={card.label} className="glass metric-card">
             <div className="value" style={{ color: card.color }}>{card.value}</div>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { loginPopup, logout, getAccessToken, setClientConfig, getClientConfig, setManualToken } from '../auth/msalConfig';
-import { loadSampleDataset, getWorkspaces, getModels, collectData, collectDataDirect, collectXmla, getScenarios, loadScenario, healthCheck } from '../api/proxy';
+import { loadSampleDataset, getWorkspaces, getModels, getAgents, collectData, collectDataDirect, collectLive, collectParallel, setLlmToken, collectXmla, getScenarios, loadScenario, healthCheck } from '../api/proxy';
 
 // Comprehensive setup checklist for Fabric Data Agent testing
 const SETUP_STEPS = [
@@ -127,9 +127,14 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
   const [directAgentName, setDirectAgentName] = useState('');
   const [directInstructions, setDirectInstructions] = useState('');
   const [showDirectEntry, setShowDirectEntry] = useState(false);
+  const [agents, setAgents] = useState([]);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState('');
   const [xmlaStatus, setXmlaStatus] = useState(''); // '', 'collecting', 'complete', 'error'
   const [xmlaError, setXmlaError] = useState('');
   const [xmlaSummary, setXmlaSummary] = useState(null);
+  const [llmTokenInput, setLlmTokenInput] = useState('');
+  const [llmTokenStatus, setLlmTokenStatus] = useState(''); // '', 'set', 'error'
 
   const toggleStep = (stepId) => {
     setCheckedSteps(prev => ({ ...prev, [stepId]: !prev[stepId] }));
@@ -357,38 +362,224 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
     }
   };
 
+  const handleFetchAgents = async () => {
+    if (!workspaceId.trim()) return;
+    try {
+      setAgentsLoading(true);
+      setError('');
+      const token = await getAccessToken().catch(() => manualTokenInput.trim());
+      const result = await getAgents(workspaceId.trim(), token);
+      setAgents(result.agents || []);
+      updateSession({ workspaceId: workspaceId.trim() });
+    } catch (err) {
+      setError(`Failed to fetch agents: ${err.message}`);
+    } finally {
+      setAgentsLoading(false);
+    }
+  };
+
+  const handleSelectAgent = (agentId) => {
+    setSelectedAgentId(agentId);
+    const agent = agents.find(a => a.id === agentId);
+    if (agent) {
+      setDirectAgentId(agent.id);
+      setDirectAgentName(agent.name);
+      setDirectInstructions(agent.description || `Data Agent: ${agent.name}`);
+    }
+  };
+
+  const [liveProgress, setLiveProgress] = useState({ current: 0, total: 0, question: '' });
+  const [liveLog, setLiveLog] = useState([]);
+
+  // ── Parallel Trace Collection ──
+  // Sends 50 LLM-generated questions to the selected agent in parallel threads (~1 min)
+  const handleParallelCollect = async () => {
+    if (!workspaceId.trim() || !selectedAgentId) return;
+    const agent = agents.find(a => a.id === selectedAgentId);
+    if (!agent) return;
+    try {
+      setLoading(true);
+      setError('');
+      const token = await getAccessToken().catch(() => manualTokenInput.trim());
+      setStatus(`Parallel collection: 50 questions → ${agent.name} (10 concurrent threads)`);
+      setLiveProgress({ current: 0, total: 50, question: 'LLM generating domain-specific questions...' });
+      setLiveLog([{ text: `Parallel collection: 50 questions → ${agent.name} (10 concurrent threads)`, status: 'info' }]);
+
+      collectParallel(
+        {
+          workspaceId: workspaceId.trim(),
+          agentId: agent.id,
+          agentName: agent.name,
+          agentInstructions: agent.description || '',
+          totalQuestions: 50,
+        },
+        token,
+        // onProgress
+        (data) => {
+          if (data.type === 'start') {
+            setLiveProgress({ current: 0, total: data.total || 50, question: `Sending ${data.total || 50} questions to ${agent.name} in parallel...` });
+            setLiveLog(prev => [...prev, { text: `Sending ${data.total || 50} parallel threads to ${agent.name}`, status: 'info' }]);
+          } else if (data.type === 'progress') {
+            setLiveProgress(prev => ({ ...prev, current: data.completed || prev.current + 1, question: `${data.question || ''}` }));
+            const icon = data.status === 'pass' ? 'OK' : data.status === 'fail' ? 'FAIL' : '';
+            const latency = data.elapsed ? ` in ${(data.elapsed / 1000).toFixed(1)}s` : '';
+            setStatus(`[${data.completed}/${data.total}] ${icon}${latency}`);
+            setLiveLog(prev => [...prev, {
+              text: `Q${data.completed}/${data.total}: ${icon}${latency} — "${(data.question || '').substring(0, 50)}"`,
+              status: data.status === 'pass' ? 'pass' : data.status === 'fail' ? 'fail' : 'pending',
+            }]);
+          } else if (data.type === 'status') {
+            setStatus(data.message || '');
+            setLiveLog(prev => [...prev, { text: data.message || '', status: 'info' }]);
+          } else if (data.type === 'building') {
+            setStatus('All questions done — building trace database...');
+            setLiveLog(prev => [...prev, { text: 'Building trace database...', status: 'info' }]);
+          }
+        },
+        // onTrace (individual trace)
+        (data) => {},
+        // onComplete
+        (result) => {
+          updateSession({
+            connected: true,
+            sessionId: result.sessionId,
+            dbPath: result.dbPath,
+            modelId: agent.id,
+            modelName: result.modelName || agent.name,
+            domain: result.domain || 'HEALTHCARE',
+            traces: result.traces || [],
+            collectionComplete: true,
+            workspaceId: workspaceId.trim(),
+            liveCollection: true,
+            parallelCollection: true,
+          });
+          const totalSec = result.totalTimeMs ? (result.totalTimeMs / 1000).toFixed(0) : '?';
+          setStatus(`Parallel collection complete — ${(result.traces || []).length} traces from ${agent.name} in ${totalSec}s`);
+          setLoading(false);
+          setLiveProgress({ current: 0, total: 0, question: '' });
+          onNavigate('traces');
+        },
+        // onError
+        (err) => {
+          setError(`Parallel collection failed: ${err.message}`);
+          setLoading(false);
+        },
+      );
+    } catch (err) {
+      setError(`Parallel collection failed: ${err.message}`);
+      setLoading(false);
+    }
+  };
+
   const handleDirectCollect = async (tracesFromPortal) => {
     if (!workspaceId.trim() || !directAgentId.trim()) return;
     try {
       setLoading(true);
       setError('');
-      setStatus('Building session from Fabric portal data...');
-      const result = await collectDataDirect({
-        workspaceId: workspaceId.trim(),
-        agentId: directAgentId.trim(),
-        agentName: directAgentName.trim() || 'Data Agent',
-        agentInstructions: directInstructions.trim(),
-        tables: [],
-        traces: tracesFromPortal || [],
-      });
-      updateSession({
-        connected: true,
-        sessionId: result.sessionId,
-        dbPath: result.dbPath,
-        modelId: directAgentId.trim(),
-        modelName: result.modelName,
-        domain: result.domain || 'healthcare',
-        traces: result.traces || [],
-        collectionComplete: true,
-        workspaceId: workspaceId.trim(),
-      });
-      setStatus('Live agent data loaded — running XMLA collection...');
-      onNavigate('traces');
-      // Auto-trigger XMLA collection in background
-      runAutoXmla(workspaceId.trim(), directAgentId.trim(), result.dbPath);
+      const token = await getAccessToken().catch(() => manualTokenInput.trim());
+
+      // Use live collection — sends real questions to the Data Agent /chat API
+      setStatus('Connecting to Data Agent...');
+      setLiveProgress({ current: 0, total: 50, question: 'Starting...' });
+      setLiveLog([]);
+
+      collectLive(
+        {
+          workspaceId: workspaceId.trim(),
+          agentId: directAgentId.trim(),
+          agentName: directAgentName.trim() || 'Data Agent',
+          agentInstructions: directInstructions.trim(),
+        },
+        token,
+        // onProgress
+        (data) => {
+          if (data.type === 'start') {
+            setLiveProgress({ current: 0, total: data.total, question: 'Creating assistant...' });
+            setStatus(`Starting collection - ${data.total} questions queued`);
+            setLiveLog([{ text: `Connected to ${directAgentName.trim() || 'Data Agent'} - sending ${data.total} diagnostic questions`, status: 'info' }]);
+          } else if (data.type === 'progress') {
+            setLiveProgress(prev => ({ ...prev, current: data.index + 1, question: data.question }));
+            setStatus(`Q${data.index + 1}/${data.total || 50}: Asking "${data.question}"`);
+            setLiveLog(prev => [...prev, { text: `Q${data.index + 1}: Sending >> "${data.question}"`, status: 'pending' }]);
+          } else if (data.type === 'building') {
+            setStatus('All questions answered - building trace database...');
+            setLiveLog(prev => [...prev, { text: 'Building trace database from responses...', status: 'info' }]);
+          } else if (data.type === 'retry') {
+            setStatus(`Rate limited - retrying in ${data.retryAfter}s...`);
+            setLiveLog(prev => [...prev, { text: `Rate limited - waiting ${data.retryAfter}s before retry`, status: 'warn' }]);
+          }
+        },
+        // onTrace
+        (data) => {
+          const t = data.trace;
+          const latency = (t.responseTimeMs / 1000).toFixed(1);
+          const ok = t.status === 'pass';
+                    setStatus(`Q${data.index + 1}: ${ok ? 'OK' : 'FAIL'} in ${latency}s - "${t.question.substring(0, 50)}"`);
+                    setLiveLog(prev => {
+                      const updated = [...prev];
+                      // Find the pending entry for this question and update it
+                      const idx = updated.findLastIndex(e => e.status === 'pending');
+                      if (idx >= 0) {
+                        updated[idx] = { text: `Q${data.index + 1}: ${ok ? 'OK' : 'FAIL'} in ${latency}s - "${t.question.substring(0, 45)}"`, status: ok ? 'pass' : 'fail' };
+            }
+            return updated;
+          });
+        },
+        // onComplete
+        (result) => {
+          updateSession({
+            connected: true,
+            sessionId: result.sessionId,
+            dbPath: result.dbPath,
+            modelId: directAgentId.trim(),
+            modelName: result.modelName,
+            domain: result.domain || 'healthcare',
+            traces: result.traces || [],
+            collectionComplete: true,
+            workspaceId: workspaceId.trim(),
+            liveCollection: true,
+          });
+          setStatus(`Real trace collection complete — ${(result.traces || []).length} traces from live Data Agent`);
+          setLoading(false);
+          setLiveProgress({ current: 0, total: 0, question: '' });
+          onNavigate('traces');
+          // Auto-trigger XMLA collection in background
+          runAutoXmla(workspaceId.trim(), directAgentId.trim(), result.dbPath);
+        },
+        // onError
+        (err) => {
+          setError(`Live collection failed: ${err.message}. Falling back to synthetic traces...`);
+          // Fallback to synthetic collection
+          collectDataDirect({
+            workspaceId: workspaceId.trim(),
+            agentId: directAgentId.trim(),
+            agentName: directAgentName.trim() || 'Data Agent',
+            agentInstructions: directInstructions.trim(),
+            tables: [],
+            traces: tracesFromPortal || [],
+          }).then(result => {
+            updateSession({
+              connected: true,
+              sessionId: result.sessionId,
+              dbPath: result.dbPath,
+              modelId: directAgentId.trim(),
+              modelName: result.modelName,
+              domain: result.domain || 'healthcare',
+              traces: result.traces || [],
+              collectionComplete: true,
+              workspaceId: workspaceId.trim(),
+            });
+            setStatus('Loaded with synthetic traces (live collection unavailable)');
+            setLoading(false);
+            onNavigate('traces');
+          }).catch(fallbackErr => {
+            setError(`Collection failed: ${fallbackErr.message}`);
+            setLoading(false);
+          });
+        },
+      );
     } catch (err) {
       setError(`Direct collection failed: ${err.message}`);
-    } finally {
       setLoading(false);
     }
   };
@@ -759,68 +950,83 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
               >
                 {!quickClientId.trim() ? 'Enter Client ID above to Sign In' : 'Connect to Fabric (OAuth)'}  
               </button>
-              <button
-                onClick={() => setShowManualToken(!showManualToken)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--text-muted)',
-                  fontSize: 11,
-                  cursor: 'pointer',
-                  textDecoration: 'underline',
-                  padding: 4,
-                }}
-              >
-                {showManualToken ? 'Hide token input' : 'Popup blocked? Paste a token manually'}
-              </button>
-              {showManualToken && (
+
+              {/* Manual Token Paste — always visible */}
+              <div style={{
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                padding: 12,
+                background: 'rgba(0,0,0,0.15)',
+                marginTop: 4,
+              }}>
+                <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
+                  Or paste a Fabric API token directly
+                </p>
                 <div style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                  padding: 12,
-                  background: 'rgba(0,0,0,0.15)',
+                  background: 'rgba(0,200,150,0.08)',
+                  border: '1px solid rgba(0,200,150,0.2)',
+                  borderRadius: 6,
+                  padding: '8px 10px',
+                  marginBottom: 10,
                 }}>
-                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-                    Get a token from Fabric portal: Open browser DevTools → Application → Session Storage → copy a Power BI API access token (starts with "eyJ").
+                  <p style={{ fontSize: 11, color: 'var(--teal)', marginBottom: 4, fontWeight: 600 }}>
+                    How to get a token (Azure Cloud Shell or local CLI):
                   </p>
-                  <textarea
-                    value={manualTokenInput}
-                    onChange={e => setManualTokenInput(e.target.value)}
-                    placeholder="Paste access token here (eyJ...)"
-                    rows={3}
-                    style={{
-                      width: '100%',
-                      padding: '8px 12px',
-                      background: 'rgba(255,255,255,0.03)',
-                      border: '1px solid var(--border)',
-                      borderRadius: 6,
-                      color: 'var(--text)',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 11,
-                      outline: 'none',
-                      resize: 'vertical',
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                  <button
-                    onClick={handleManualToken}
-                    disabled={!manualTokenInput.trim()}
-                    style={{
-                      marginTop: 8,
-                      padding: '6px 16px',
-                      borderRadius: 6,
-                      border: '1px solid var(--border)',
-                      background: manualTokenInput.trim() ? 'var(--teal)' : 'rgba(255,255,255,0.05)',
-                      color: manualTokenInput.trim() ? '#000' : 'var(--text-muted)',
-                      fontSize: 12,
-                      fontWeight: 600,
-                      cursor: manualTokenInput.trim() ? 'pointer' : 'not-allowed',
-                    }}
-                  >
-                    Connect with Token
-                  </button>
+                  <code style={{
+                    display: 'block',
+                    fontSize: 10,
+                    color: 'var(--text)',
+                    background: 'rgba(0,0,0,0.3)',
+                    padding: '6px 8px',
+                    borderRadius: 4,
+                    fontFamily: 'var(--font-mono)',
+                    wordBreak: 'break-all',
+                    marginBottom: 4,
+                    userSelect: 'all',
+                  }}>
+                    az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv
+                  </code>
+                  <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: 0 }}>
+                    Requires: <code style={{ fontSize: 10 }}>az login</code> first. Token expires in ~60 min. Use <a href="https://shell.azure.com" target="_blank" rel="noreferrer" style={{ color: 'var(--teal)' }}>shell.azure.com</a> if no local CLI.
+                  </p>
                 </div>
-              )}
+                <textarea
+                  value={manualTokenInput}
+                  onChange={e => setManualTokenInput(e.target.value)}
+                  placeholder="Paste access token here (eyJ...)"
+                  rows={3}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    color: 'var(--text)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11,
+                    outline: 'none',
+                    resize: 'vertical',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <button
+                  onClick={handleManualToken}
+                  disabled={!manualTokenInput.trim()}
+                  style={{
+                    marginTop: 8,
+                    padding: '6px 16px',
+                    borderRadius: 6,
+                    border: '1px solid var(--border)',
+                    background: manualTokenInput.trim() ? 'var(--teal)' : 'rgba(255,255,255,0.05)',
+                    color: manualTokenInput.trim() ? '#000' : 'var(--text-muted)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: manualTokenInput.trim() ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  Connect with Token
+                </button>
+              </div>
             </div>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -840,70 +1046,128 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
             <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
               Workspace ID (from Fabric URL)
             </label>
-            <input
-              type="text"
-              value={workspaceId}
-              onChange={e => setWorkspaceId(e.target.value)}
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-              style={{
-                width: '100%',
-                padding: '10px 14px',
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                color: 'var(--text)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 13,
-                outline: 'none',
-                marginBottom: 12,
-                boxSizing: 'border-box',
-              }}
-            />
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <input
+                type="text"
+                value={workspaceId}
+                onChange={e => { setWorkspaceId(e.target.value); setAgents([]); setSelectedAgentId(''); }}
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                style={{
+                  flex: 1,
+                  padding: '10px 14px',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  color: 'var(--text)',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 13,
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
+              <button
+                onClick={handleFetchAgents}
+                disabled={!workspaceId.trim() || agentsLoading}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: 8,
+                  border: '1px solid var(--border)',
+                  background: workspaceId.trim() ? 'var(--teal)' : 'rgba(255,255,255,0.05)',
+                  color: workspaceId.trim() ? '#000' : 'var(--text-muted)',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: workspaceId.trim() ? 'pointer' : 'not-allowed',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {agentsLoading ? 'Loading...' : 'Load Agents'}
+              </button>
+            </div>
 
-            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-              Data Agent ID (from Fabric URL: /aiskills/&lt;this-id&gt;)
-            </label>
-            <input
-              type="text"
-              value={directAgentId}
-              onChange={e => setDirectAgentId(e.target.value)}
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-              style={{
-                width: '100%',
-                padding: '10px 14px',
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                color: 'var(--text)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 13,
-                outline: 'none',
-                marginBottom: 12,
-                boxSizing: 'border-box',
-              }}
-            />
+            {agents.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                  Select Data Agent ({agents.length} found)
+                </label>
+                <select
+                  value={selectedAgentId}
+                  onChange={e => handleSelectAgent(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    color: 'var(--text)',
+                    fontSize: 13,
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="">-- Choose an agent --</option>
+                  {agents.map(a => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}{a.description ? ` — ${a.description.slice(0, 60)}` : ''}
+                    </option>
+                  ))}
+                </select>
+                {selectedAgentId && (
+                  <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                    Agent ID: {selectedAgentId}
+                  </div>
+                )}
+              </div>
+            )}
 
-            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-              Agent Name
-            </label>
-            <input
-              type="text"
-              value={directAgentName}
-              onChange={e => setDirectAgentName(e.target.value)}
-              placeholder="e.g. LOS_Bad_Agent"
-              style={{
-                width: '100%',
-                padding: '10px 14px',
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                color: 'var(--text)',
-                fontSize: 13,
-                outline: 'none',
-                marginBottom: 12,
-                boxSizing: 'border-box',
-              }}
-            />
+            {agents.length === 0 && (
+              <>
+                <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                  Data Agent ID (from Fabric URL: /aiskills/&lt;this-id&gt;)
+                </label>
+                <input
+                  type="text"
+                  value={directAgentId}
+                  onChange={e => setDirectAgentId(e.target.value)}
+                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    color: 'var(--text)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 13,
+                    outline: 'none',
+                    marginBottom: 12,
+                    boxSizing: 'border-box',
+                  }}
+                />
+
+                <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                  Agent Name
+                </label>
+                <input
+                  type="text"
+                  value={directAgentName}
+                  onChange={e => setDirectAgentName(e.target.value)}
+                  placeholder="e.g. LOS_Bad_Agent"
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    color: 'var(--text)',
+                    fontSize: 13,
+                    outline: 'none',
+                    marginBottom: 12,
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </>
+            )}
 
             <button
               onClick={() => setShowDirectEntry(!showDirectEntry)}
@@ -959,6 +1223,76 @@ export default function ConnectTab({ session, updateSession, onNavigate }) {
             >
               {loading ? status || 'Collecting...' : 'Analyze Data Agent'}
             </button>
+
+            {/* Parallel Collection Button — shows when an agent is selected */}
+            {selectedAgentId && (
+              <button
+                className="btn-primary"
+                onClick={handleParallelCollect}
+                disabled={loading || !workspaceId.trim() || !selectedAgentId}
+                style={{
+                  width: '100%',
+                  justifyContent: 'center',
+                  marginTop: 8,
+                  background: loading ? undefined : 'linear-gradient(135deg, var(--teal), #6366f1)',
+                  opacity: (loading || !selectedAgentId) ? 0.5 : 1,
+                }}
+              >
+                {loading ? status || 'Running...' : `Parallel Collection — 50 Questions (10 threads, ~1 min)`}
+              </button>
+            )}
+
+            {/* Live Collection Progress Log */}
+            {loading && liveLog.length > 0 && (
+              <div style={{
+                marginTop: 12,
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                padding: 12,
+                background: 'rgba(0,0,0,0.2)',
+                maxHeight: 220,
+                overflowY: 'auto',
+              }}>
+                {/* Progress bar */}
+                {liveProgress.total > 0 && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+                      <span>Progress: {liveProgress.current}/{liveProgress.total}</span>
+                      <span>{liveProgress.total > 0 ? Math.round((liveProgress.current / liveProgress.total) * 100) : 0}%</span>
+                    </div>
+                    <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2 }}>
+                      <div style={{
+                        height: '100%',
+                        width: `${(liveProgress.current / liveProgress.total) * 100}%`,
+                        background: 'var(--teal)',
+                        borderRadius: 2,
+                        transition: 'width 0.5s ease',
+                      }} />
+                    </div>
+                  </div>
+                )}
+                {liveLog.map((entry, i) => (
+                  <div key={i} style={{
+                    fontSize: 11,
+                    fontFamily: 'var(--font-mono)',
+                    padding: '3px 0',
+                    color: entry.status === 'pass' ? 'var(--green)'
+                      : entry.status === 'fail' ? 'var(--red)'
+                      : entry.status === 'warn' ? 'var(--amber)'
+                      : entry.status === 'pending' ? 'var(--teal)'
+                      : 'var(--text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}>
+                    <span style={{ flexShrink: 0, width: 14, textAlign: 'center' }}>
+                      {entry.status === 'pass' ? '\u2713' : entry.status === 'fail' ? '\u2717' : entry.status === 'pending' ? '\u25CB' : '\u2022'}
+                    </span>
+                    <span>{entry.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
               Find IDs in the Fabric URL: /groups/&lt;workspace-id&gt;/aiskills/&lt;agent-id&gt;

@@ -4,14 +4,23 @@
 // grok removed per user request
 export const MODELS = [
   {
+    id: 'gpt-5.4',
+    name: 'GPT-5.4',
+    provider: 'Azure OpenAI',
+    description: 'Standard completions model — fast, reliable, uses Chat Completions API',
+    authMethods: ['api-key'],
+    strengths: ['Fast inference', 'Reliable', 'Chat Completions API', 'General purpose'],
+    recommended: ['domain_intelligence', 'synthesis', 'remediation', 'finding_validator', 'report_validator'],
+    default: true,
+  },
+  {
     id: 'gpt-5.4-pro',
     name: 'GPT-5.4 Pro',
     provider: 'Azure OpenAI',
-    description: 'Reasoning model — highest intelligence for complex analysis, uses Responses API',
+    description: 'Reasoning model — highest intelligence, uses Responses API (may be slower)',
     authMethods: ['api-key'],
     strengths: ['Deep reasoning', 'Complex analysis', 'Multi-step logic', 'Highest accuracy'],
-    recommended: ['domain_intelligence', 'synthesis', 'remediation', 'finding_validator', 'report_validator'],
-    default: true,
+    recommended: [],
   },
   {
     id: 'DeepSeek-V3.2-Speciale',
@@ -42,20 +51,21 @@ export const MODELS = [
   },
 ];
 
-// Default model assignment per agent — mixed GPT-5.4-pro + DeepSeek V3.2 Speciale
-// GPT-5.4-pro: LLM-heavy agents that benefit from deep reasoning (Domain, Synthesis, Remediation, Finding/Report Validators)
-// DeepSeek V3.2 Speciale: Rule-heavy agents that need fast inference (Adversarial, Schema, DAX, Execution, Monte Carlo)
+// Default model assignment per agent — mixed GPT-5.4 + DeepSeek V3.2 Speciale
+// DeepSeek V3.2 Speciale: Most agents — fast, reliable, no empty-content issues
+// GPT-5.4: Finding/Report Validators only (gpt-5.4 intermittently returns empty for large prompts, retry+fallback handles it)
+// Note: GPT-5.4 Pro (reasoning model) is available in dropdown but not default — it uses Responses API which can be slow
 export const DEFAULT_AGENT_MODELS = {
-  domain_intelligence: 'gpt-5.4-pro',
+  domain_intelligence: 'DeepSeek-V3.2-Speciale',
   adversarial_probe: 'DeepSeek-V3.2-Speciale',
   schema: 'DeepSeek-V3.2-Speciale',
   dax: 'DeepSeek-V3.2-Speciale',
   execution: 'DeepSeek-V3.2-Speciale',
-  synthesis: 'gpt-5.4-pro',
+  synthesis: 'DeepSeek-V3.2-Speciale',
   monte_carlo: 'DeepSeek-V3.2-Speciale',
-  remediation: 'gpt-5.4-pro',
-  finding_validator: 'gpt-5.4-pro',
-  report_validator: 'gpt-5.4-pro',
+  remediation: 'DeepSeek-V3.2-Speciale',
+  finding_validator: 'gpt-5.4',
+  report_validator: 'gpt-5.4',
 };
 
 // Get model by ID

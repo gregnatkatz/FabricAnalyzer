@@ -176,10 +176,16 @@ export default function TrendingTab({ session }) {
           {loading ? (
             <p style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', padding: 40 }}>Loading history...</p>
           ) : history.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: 40 }}>
-              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>No analysis history yet.</p>
-              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
-                Run an analysis and it will appear here. History is saved automatically after each pipeline run.
+            <div style={{ textAlign: 'center', padding: 40, border: '1px dashed var(--border)', borderRadius: 8 }}>
+              <p style={{ fontSize: 32, marginBottom: 8 }}>&#128202;</p>
+              <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>No analysis history yet</p>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, maxWidth: 400, margin: '0 auto' }}>
+                Each time you run the analysis pipeline, results are saved here automatically.
+                Over multiple runs you'll see trends — whether findings are improving or degrading,
+                and how total latency impact changes over time.
+              </p>
+              <p style={{ fontSize: 11, color: 'var(--teal)', marginTop: 12 }}>
+                Go to the <strong>Workflow</strong> tab and run an analysis to get started.
               </p>
             </div>
           ) : (

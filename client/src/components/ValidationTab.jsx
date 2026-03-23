@@ -5,8 +5,10 @@ import { startValidation } from '../api/proxy';
 const STATES = { LOCKED: 'LOCKED', READY: 'READY', RUNNING: 'RUNNING', COMPLETE: 'COMPLETE', STALE: 'STALE' };
 
 export default function ValidationTab({ session, updateSession }) {
-  const [selectedFixes, setSelectedFixes] = useState([]);
+  // Auto-select all fixes by default
+  const [selectedFixes, setSelectedFixes] = useState(() => FIX_KEYS.filter(k => k !== 'physician_gov'));
   const [progress, setProgress] = useState(null);
+  const [validationError, setValidationError] = useState(null);
   const [validationState, setValidationState] = useState(
     !session.collectionComplete ? STATES.LOCKED
       : session.validationComplete ? STATES.COMPLETE
@@ -25,15 +27,32 @@ export default function ValidationTab({ session, updateSession }) {
     setValidationState(STATES.RUNNING);
     setProgress({ current: 0, total: 20, phase: 'baseline' });
 
+    setValidationError(null);
     startValidation(
       session.sessionId,
       selectedFixes,
       (data) => {
-        setProgress({ current: data.question || 0, total: 20, phase: data.phase || 'running' });
+        // Handle both 'progress' and 'phase' event types from fix_applicator.py
+        const phaseName = data.name || data.phase || 'running';
+        const phaseNum = data.phase || 0;
+        setProgress({ current: phaseNum, total: 4, phase: phaseName });
       },
       (data) => {
+        // Map fix_applicator.py output to UI expected format
+        const mapped = {
+          baseline_avg_ms: data.baseline_avg || 0,
+          postfix_avg_ms: data.postfix_avg || 0,
+          reduction_pct: data.reduction_pct || 0,
+          questions: (data.per_question || []).map(q => ({
+            question: q.question || '',
+            baseline_ms: q.baseline_ms || q.before || 0,
+            postfix_ms: q.postfix_ms || q.after || 0,
+            delta_ms: (q.baseline_ms || q.before || 0) - (q.postfix_ms || q.after || 0),
+          })),
+          resolutions: data.resolutions || [],
+        };
         updateSession({
-          validationResults: data.results,
+          validationResults: mapped,
           validationComplete: true,
         });
         setValidationState(STATES.COMPLETE);
@@ -41,6 +60,7 @@ export default function ValidationTab({ session, updateSession }) {
       },
       (err) => {
         console.error('Validation error:', err);
+        setValidationError(err?.message || 'Validation failed — check server logs');
         setValidationState(STATES.READY);
         setProgress(null);
       }
@@ -48,6 +68,12 @@ export default function ValidationTab({ session, updateSession }) {
   };
 
   const vr = session.validationResults;
+
+  // Compute baseline latency from traces so we can show it even before validation runs
+  const traces = session.traces || [];
+  const baselineAvgMs = traces.length > 0
+    ? traces.reduce((sum, t) => sum + (t.latency_ms || 0), 0) / traces.length
+    : 0;
 
   if (validationState === STATES.LOCKED) {
     return (
@@ -102,30 +128,40 @@ export default function ValidationTab({ session, updateSession }) {
         </div>
       )}
 
-      {/* Results */}
-      {vr && validationState !== STATES.LOCKED && (
+      {/* Results — show baseline from traces even before validation runs */}
+      {(vr || baselineAvgMs > 0) && validationState !== STATES.LOCKED && (
         <>
           {/* Summary cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
             <div className="glass metric-card">
-              <div className="label">Before</div>
-              <div className="value" style={{ color: 'var(--red)' }}>{((vr.baseline_avg_ms || 0) / 1000).toFixed(1)}s</div>
-              <div className="label">avg latency</div>
+              <div className="label">Before (Measured)</div>
+              <div className="value" style={{ color: 'var(--red)' }}>{((vr?.baseline_avg_ms || baselineAvgMs) / 1000).toFixed(1)}s</div>
+              <div className="label">avg latency ({traces.length} traces)</div>
             </div>
             <div className="glass metric-card">
-              <div className="label">After</div>
-              <div className="value" style={{ color: 'var(--green)' }}>{((vr.postfix_avg_ms || 0) / 1000).toFixed(1)}s</div>
-              <div className="label">avg latency</div>
+              <div className="label">After (Projected)</div>
+              <div className="value" style={{ color: vr?.postfix_avg_ms ? 'var(--green)' : 'var(--text-muted)' }}>
+                {vr?.postfix_avg_ms ? `${(vr.postfix_avg_ms / 1000).toFixed(1)}s` : 'Run validation'}
+              </div>
+              <div className="label">{vr?.postfix_avg_ms ? 'avg latency' : 'to measure'}</div>
             </div>
             <div className="glass metric-card">
               <div className="label">Reduction</div>
-              <div className="value" style={{ color: 'var(--teal)' }}>{vr.reduction_pct || 0}%</div>
-              <div className="label">improvement</div>
+              <div className="value" style={{ color: vr?.reduction_pct ? 'var(--teal)' : 'var(--text-muted)' }}>
+                {vr?.reduction_pct ? `${vr.reduction_pct}%` : '—'}
+              </div>
+              <div className="label">{vr?.reduction_pct ? 'improvement' : 'pending'}</div>
             </div>
           </div>
 
+          {!vr && baselineAvgMs > 0 && (
+            <div className="glass" style={{ padding: '12px 16px', marginBottom: 16, borderLeft: '3px solid var(--teal)', fontSize: 13, color: 'var(--text-muted)' }}>
+              Baseline latency measured from {traces.length} real traces. Click <strong>Run Validation</strong> above to apply the selected fixes and re-measure latency to see the improvement.
+            </div>
+          )}
+
           {/* Per-question table */}
-          {vr.questions && (
+          {vr?.questions && (
             <div className="glass" style={{ padding: 20, marginBottom: 20 }}>
               <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Per-Question Breakdown</h4>
               <div style={{ overflowX: 'auto' }}>
@@ -158,7 +194,7 @@ export default function ValidationTab({ session, updateSession }) {
           )}
 
           {/* Resolution status */}
-          {vr.resolutions && (
+          {vr?.resolutions && (
             <div className="glass" style={{ padding: 20 }}>
               <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Finding Resolution Status</h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -175,6 +211,12 @@ export default function ValidationTab({ session, updateSession }) {
             </div>
           )}
         </>
+      )}
+
+      {validationError && (
+        <div className="glass" style={{ padding: 16, marginTop: 16, border: '1px solid var(--red)', background: 'rgba(239, 68, 68, 0.05)' }}>
+          <p style={{ color: 'var(--red)', fontSize: 13 }}>{validationError}</p>
+        </div>
       )}
     </div>
   );

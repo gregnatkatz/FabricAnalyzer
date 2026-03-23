@@ -258,12 +258,57 @@ export default function FindingsTab({ session }) {
               The <strong>single biggest latency offender</strong> is <em>"{topOffender.issue}"</em> with
               an estimated impact of <strong style={{ color: 'var(--red)' }}>{topOffender.impact_ms >= 1000 ? `${(topOffender.impact_ms / 1000).toFixed(1)}s` : `${topOffender.impact_ms}ms`}</strong>.
               Remediating just the top 3 findings would eliminate approximately <strong style={{ color: 'var(--green)' }}>
-              {((criticalFindings.slice(0, 3).reduce((s, f) => s + (f.impact_ms || 0), 0) / Math.max(totalImpactMs, 1)) * 100).toFixed(0)}%</strong> of
+              {(([...findings].sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0)).slice(0, 3).reduce((s, f) => s + (f.impact_ms || 0), 0) / Math.max(totalImpactMs, 1)) * 100).toFixed(0)}%</strong> of
               the total measured latency impact. Click any finding below to expand its detailed explanation, evidence, recommended fix, and step-by-step resolution guide.
             </p>
           )}
         </div>
       )}
+
+      {/* Top 3 Action Items — biggest issues with clear next steps */}
+      {findings.length > 0 && (() => {
+        const top3 = [...findings].sort((a, b) => (b.impact_ms || 0) - (a.impact_ms || 0)).slice(0, 3);
+        const top3Impact = top3.reduce((s, f) => s + (f.impact_ms || 0), 0);
+        const top3Pct = totalImpactMs > 0 ? ((top3Impact / totalImpactMs) * 100).toFixed(0) : 0;
+        return (
+          <div className="glass" style={{ padding: '20px 24px', marginBottom: 20, borderLeft: '3px solid var(--red)', background: 'rgba(211,47,47,0.03)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0, color: 'var(--red)' }}>Top 3 Action Items</h3>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                Fixing these eliminates <strong style={{ color: 'var(--green)' }}>{top3Pct}%</strong> of total impact ({(top3Impact / 1000).toFixed(1)}s of {(totalImpactMs / 1000).toFixed(1)}s)
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {top3.map((f, i) => {
+                const agent = AGENTS[f.agent_id] || {};
+                return (
+                  <div key={f.finding_id || i} style={{
+                    display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
+                    background: 'rgba(255,255,255,0.02)', borderRadius: 6, border: '1px solid var(--border)',
+                  }}>
+                    <div style={{
+                      minWidth: 28, height: 28, borderRadius: '50%',
+                      background: 'rgba(211,47,47,0.15)', color: 'var(--red)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 12, fontWeight: 700,
+                    }}>#{i + 1}</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>{f.issue}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        <span style={{ color: agent.accent }}>{agent.glyph} {agent.name || f.agent_id}</span>
+                        {f.fix && <span style={{ marginLeft: 8, color: 'var(--green)' }}>Fix: {f.fix.substring(0, 80)}{f.fix.length > 80 ? '...' : ''}</span>}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: 'var(--red)' }}>
+                      {f.impact_ms >= 1000 ? `${(f.impact_ms / 1000).toFixed(1)}s` : `${f.impact_ms}ms`}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Summary stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 20 }}>
@@ -309,15 +354,36 @@ export default function FindingsTab({ session }) {
         ))}
       </div>
 
-      {/* Findings list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {sorted.map((finding, i) => (
-          <FindingCard key={finding.finding_id || i} finding={finding} rank={i + 1} session={session} />
-        ))}
-        {sorted.length === 0 && (
-          <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 32 }}>No findings match filters.</p>
-        )}
-      </div>
+      {/* Findings list — separate agent findings from validator meta-findings */}
+      {(() => {
+        const agentFindings = sorted.filter(f => !['finding_validator', 'report_validator'].includes(f.agent_id));
+        const metaFindings = sorted.filter(f => ['finding_validator', 'report_validator'].includes(f.agent_id));
+        return (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {agentFindings.map((finding, i) => (
+                <FindingCard key={finding.finding_id || i} finding={finding} rank={i + 1} session={session} />
+              ))}
+            </div>
+            {metaFindings.length > 0 && (
+              <div style={{ marginTop: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <h4 style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', margin: 0 }}>Validation & Quality Checks</h4>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>These are meta-findings from the validator agents reviewing the analysis above</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, opacity: 0.85 }}>
+                  {metaFindings.map((finding, i) => (
+                    <FindingCard key={finding.finding_id || i} finding={finding} rank={agentFindings.length + i + 1} session={session} />
+                  ))}
+                </div>
+              </div>
+            )}
+            {sorted.length === 0 && (
+              <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 32 }}>No findings match filters.</p>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }
