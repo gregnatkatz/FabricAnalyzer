@@ -3,6 +3,8 @@ import { exportPdf } from '../api/proxy';
 
 export default function ArtifactsTab({ session }) {
   const [exporting, setExporting] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState(null);
   const [error, setError] = useState('');
 
   const agentResults = session.agentResults || [];
@@ -51,6 +53,24 @@ export default function ArtifactsTab({ session }) {
     };
   }, [rawArtifacts, findings, session.modelName]);
 
+  const handlePreview = async () => {
+    setPreviewing(true);
+    setError('');
+    try {
+      const res = await fetch('/api/pdf/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(session),
+      });
+      const html = await res.text();
+      setPreviewHtml(html);
+    } catch (err) {
+      setError(`Preview failed: ${err.message}`);
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
   const handleExportPdf = async () => {
     try {
       setExporting(true);
@@ -81,12 +101,61 @@ export default function ArtifactsTab({ session }) {
 
   return (
     <div className="fade-in">
-      {/* Export PDF */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 20 }}>
+      {/* Export PDF + Preview */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginBottom: 20 }}>
+        <button className="btn-secondary" onClick={handlePreview} disabled={previewing}>
+          {previewing ? 'Loading preview...' : 'Preview Report'}
+        </button>
         <button className="btn-primary" onClick={handleExportPdf} disabled={exporting}>
           {exporting ? 'Generating PDF...' : 'Export PDF'}
         </button>
       </div>
+
+      {/* Full-screen preview modal */}
+      {previewHtml && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 1000,
+          background: 'rgba(0,0,0,0.85)',
+          display: 'flex', flexDirection: 'column',
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '12px 24px',
+            background: '#0f1923',
+            borderBottom: '1px solid rgba(255,255,255,0.1)',
+          }}>
+            <span style={{ fontSize: '13px', color: '#8899aa', fontFamily: 'monospace' }}>
+              Report Preview — review before exporting
+            </span>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                onClick={handleExportPdf}
+                disabled={exporting}
+                style={{ background: '#1a6fff', color: '#fff', border: 'none',
+                         padding: '7px 18px', borderRadius: '5px', cursor: 'pointer',
+                         fontSize: '12px', fontWeight: 600 }}
+              >
+                {exporting ? 'Generating...' : 'Export PDF'}
+              </button>
+              <button
+                onClick={() => setPreviewHtml(null)}
+                style={{ background: 'transparent', color: '#8899aa',
+                         border: '1px solid rgba(255,255,255,0.15)',
+                         padding: '7px 14px', borderRadius: '5px', cursor: 'pointer',
+                         fontSize: '12px' }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <iframe
+            srcDoc={previewHtml}
+            style={{ flex: 1, border: 'none', background: '#fff' }}
+            title="Report Preview"
+            sandbox="allow-same-origin allow-scripts"
+          />
+        </div>
+      )}
 
       {/* Summary card */}
       <div className="glass" style={{ padding: 20, marginBottom: 16 }}>

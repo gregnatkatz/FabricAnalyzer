@@ -1,6 +1,6 @@
 # Agent Reference
 
-Detailed specification for each of the 9 agents in the FabricAnalyzer pipeline.
+Detailed specification for each of the 13 logical agents in the FabricAnalyzer pipeline (11 numbered + Finding Validator + Report Validator).
 
 ---
 
@@ -190,7 +190,59 @@ ChromaDB query: `"fabric data agent DAX generation retry routing pattern"`
 
 ---
 
-## Agent 5: Execution Agent
+## Agent 5: DAX Expression Agent
+
+**File**: `agents/dax_expression_checks.py`
+**Type**: 10 deterministic rules + DeepSeek LLM analysis
+**Purpose**: Analyze measure DAX expressions for anti-patterns that cause latency, incorrect results, or silent failures.
+
+### 10 Deterministic Rules
+
+| # | Rule | Threshold | Severity | Impact |
+|---|------|-----------|----------|--------|
+| EX-1 | Nested CALCULATE depth | >2 CALCULATE( calls | HIGH | depth * 800ms |
+| EX-2 | Iterator on large table | SUMX/AVERAGEX etc. on Fact/Dim | HIGH | 2500ms |
+| EX-3 | Unsafe division | bare `/` without DIVIDE() | MEDIUM | 0ms |
+| EX-4 | FILTER on full table | FILTER(TableName,...) | HIGH | 1800ms |
+| EX-5 | Cartesian product risk | CROSSJOIN/GENERATE | CRITICAL | 5000ms |
+| EX-6 | ALL() without ALLSELECTED | ALL() in CALCULATE | MEDIUM | 0ms |
+| EX-7 | Excessive expression length | >500 chars | MEDIUM | 600ms |
+| EX-8 | Single-select dependency | SELECTEDVALUE/HASONEVALUE | MEDIUM | 0ms |
+| EX-9 | Hardcoded date literals | hardcoded 4-digit year | CRITICAL | 9999ms |
+| EX-10 | USERELATIONSHIP direction | USERELATIONSHIP(A, B) | HIGH | 4000ms |
+
+### Two-Pass Architecture
+
+1. **Deterministic pass** (fast, no LLM): Runs all 10 regex-based rules on `measures.expression`
+2. **LLM pass** (DeepSeek): Sends measure list + deterministic findings to DeepSeek for pattern detection that regex cannot catch (circular refs, BLANK propagation, implicit context transition risks, etc.)
+
+Deterministic findings take precedence; LLM fills the gaps.
+
+ChromaDB query: `"DAX measure expression anti-patterns CALCULATE iterator USERELATIONSHIP hardcoded date optimization"`
+
+---
+
+## Agent 6: XMLA Agent
+
+**File**: `agents/xmla_checks.py`
+**Type**: Deterministic rules only
+**Purpose**: Analyze XMLA metadata (storage modes, partitions, Direct Lake configuration) for execution-layer issues.
+
+### 6 Deterministic Rules
+
+Requires XMLA collection to have run first. If no XMLA data is available, the agent returns zero findings.
+
+Rules check for:
+- Direct Lake storage mode configuration
+- Partition strategy issues
+- V-Order optimization status
+- Table compression analysis
+- Relationship cardinality warnings
+- Large table row count thresholds
+
+---
+
+## Agent 7: Execution Agent
 
 **File**: `agents/execution_checks.py`
 **Type**: Deterministic rules + optional LLM enhancement
@@ -200,15 +252,15 @@ ChromaDB query: `"fabric data agent DAX generation retry routing pattern"`
 
 | # | Rule | Threshold | Severity | Impact |
 |---|------|-----------|----------|--------|
-| 1 | Outlier trace | >45000ms | CRITICAL | total_ms |
-| 2 | Slow trace | >20000ms | HIGH | total_ms - 10000 |
-| 3 | Execution phase dominant | bd_exec/total > 35% | HIGH | bd_exec |
-| 4 | DAX generation dominant | bd_nldax/total > 55% | HIGH | bd_nldax |
-| 5 | Retry dominant | retries*3100 > total*0.4 | HIGH | retries * 3100 |
-| 6 | Schema lookup dominant | bd_schema/total > 25% | HIGH | bd_schema |
-| 7 | High CU throttling | throttle_events > 50 | CRITICAL | 5000ms |
-| 8 | V-Order not confirmed | Direct Lake mode | MEDIUM | 2000ms |
-| 9 | Direct Lake framing risk | >500K rows + Direct Lake | HIGH | 3000ms |
+| E1 | Outlier trace | >45000ms | CRITICAL | total_ms |
+| E2 | Slow trace | >20000ms | HIGH | total_ms - 10000 |
+| E3 | Execution phase dominant | bd_exec/total > 35% | HIGH | bd_exec |
+| E4 | DAX generation dominant | bd_nldax/total > 55% | HIGH | bd_nldax |
+| E5 | Retry dominant | retries*3100 > total*0.4 | HIGH | retries * 3100 |
+| E6 | Schema lookup dominant | bd_schema/total > 25% | HIGH | bd_schema |
+| E7 | High CU throttling | throttle_events > 50 | CRITICAL | 5000ms |
+| E8 | V-Order not confirmed | Direct Lake mode | MEDIUM | 2000ms |
+| E9 | Direct Lake framing risk | >500K rows + Direct Lake | HIGH | 3000ms |
 
 ### Phase Breakdown Fields
 
@@ -219,23 +271,19 @@ Each trace has latency split into phases:
 - `bd_parse`: Parse/planning time
 - `bd_synth`: Response synthesis time
 
-### LLM Enhancement
-
-ChromaDB query: `"fabric data agent execution latency CU throttling performance"`
-
 ---
 
-## Agent 6: Synthesis Agent
+## Agent 8: Synthesis Agent
 
-**File**: `agents/pipeline.py` (inline, lines 335-358)
+**File**: `agents/pipeline.py` (inline)
 **Type**: LLM-only (no deterministic rules)
 **Purpose**: Cross-correlate findings across all agents, rank by impact, assess demo readiness.
 
 ### Template Variables
 
 The Synthesis prompt receives:
-- `all_findings_json`: All findings from Agents 1-5
-- `behavioral_evidence`: BehavioralProfile from Agent 2
+- `all_findings`: All findings from Agents 1-7
+- `behavioral_summary`: BehavioralProfile from Agent 2
 
 ### Output
 
@@ -249,10 +297,10 @@ When no LLM is available, the pipeline sorts findings by impact_ms descending an
 
 ---
 
-## Agent 7: Monte Carlo Agent
+## Agent 9: Latency Impact Projection
 
 **File**: `synthetic/monte_carlo_engine.py`
-**Type**: Statistical simulation (no LLM)
+**Type**: Deterministic math model (no LLM)
 **Purpose**: Project latency reduction from applying fixes using calibrated distributions.
 
 ### Simulation Parameters
@@ -283,11 +331,8 @@ for each iteration (500):
   "baseline": { "avg_ms": 29000, "p95_ms": 45000 },
   "projected": { "p10": 12000, "p50": 15000, "p90": 19000 },
   "per_fix": {
-    "verified_answers": { "p10": 18000, "p50": 20000, "p90": 23000, "reduction_ms": 9000 },
-    ...
-  },
-  "variance_record": { "avg_stddev": 800, "p95_stddev": 2100 },
-  "calibration": { "retry_alpha": 0.6, "routing_alpha": 0.3, ... }
+    "verified_answers": { "p10": 18000, "p50": 20000, "p90": 23000, "reduction_ms": 9000 }
+  }
 }
 ```
 
@@ -297,16 +342,17 @@ Results are written to the `monte_carlo_results` SQLite table with 25+ columns i
 
 ---
 
-## Agent 8: Remediation Agent
+## Agent 10: Remediation Agent
 
-**File**: `agents/pipeline.py` (inline, lines 372-390)
+**File**: `agents/pipeline.py` (inline)
 **Type**: LLM-only
 **Purpose**: Generate actionable, paste-ready fix artifacts.
 
 ### Template Variables
 
-- `all_findings_json`: All findings from Agents 1-7
-- `mc_results_json`: Monte Carlo output with per-fix P50 values
+- `ranked_findings`: All findings from Agents 1-9
+- `instruction_text`: Current agent instruction text
+- `table_names`, `measure_names`: Schema metadata
 
 ### Generated Artifacts
 
@@ -318,45 +364,102 @@ Results are written to the `monte_carlo_results` SQLite table with 25+ columns i
 
 ---
 
-## Agent 9: Validation Agent
+## Agent 11: Finding Validator
 
-**File**: `agents/pipeline.py` (inline, lines 393-437)
-**Type**: LLM-only (with deterministic fallback)
-**Purpose**: Validate fix effectiveness and produce final pipeline summary.
+**File**: `agents/pipeline.py` (inline)
+**Type**: LLM-only (GPT-5.4)
+**Purpose**: Validate individual findings for accuracy and consistency.
 
-### Template Variables
+### Validation Checks
 
-- `fixes_applied`: Active fix list from Monte Carlo
-- `baseline_results`: Pre-fix baseline metrics
-- `postfix_results`: Projected post-fix metrics
-- `delta_analysis`: Reduction percentages and confidence
-- `resolution_status`: Critical/high counts, artifact availability
+1. Check each finding's severity rating against its evidence
+2. Identify contradictions between findings from different agents
+3. Validate that impact_ms estimates are realistic
+4. Flag findings that lack sufficient evidence or specificity
 
-### Fallback
+### Output
 
-Without LLM, produces:
+```json
+{
+  "effective_fixes": ["string"],
+  "ineffective_fixes": ["string"],
+  "contradictions": ["string"],
+  "findings": [ { "issue": "...", "severity": "...", "agent_id": "finding_validator" } ]
+}
 ```
-"Pipeline identified {N} findings. Monte Carlo projects {X}% latency reduction
-(P50: {Y}ms). {Z} critical issues."
+
+---
+
+## Agent 12: Report Validator
+
+**File**: `agents/pipeline.py` (inline)
+**Type**: LLM-only (GPT-5.4)
+**Purpose**: Validate overall analysis report quality, completeness, and demo readiness.
+
+### Validation Checks
+
+1. Identify gaps -- important Data Agent issues that no agent caught
+2. Assess whether the demo readiness verdict is consistent with severity distribution
+3. Validate that projected latency reduction is achievable
+4. Provide overall confidence score for analysis quality
+
+### Output
+
+```json
+{
+  "summary": "string",
+  "confidence_score": 0.85,
+  "gaps": ["string"],
+  "recommendations": ["string"],
+  "findings": [ { "issue": "...", "severity": "...", "agent_id": "report_validator" } ]
+}
 ```
-Plus effective fixes (reduction > 500ms) and ineffective fixes (reduction < 100ms).
 
 ---
 
 ## Agent Execution Order
 
-All 9 agents run sequentially. The pipeline aborts early only if no traces are available. Agents 1-5 produce deterministic findings that work without LLM. Agents 6-9 produce richer output when LLM is available but fall back to deterministic summaries.
+Agents 1-2 run sequentially (Agent 2 depends on probe questions from Agent 1). Agents 3-7 run in parallel via `ThreadPoolExecutor(max_workers=5)`, reducing that segment by ~50-60%. Agents 8-10 run sequentially. Agents 11-12 run in parallel via `ThreadPoolExecutor(max_workers=2)`.
 
 ```
-Agent 1 → domain, probe_questions
-Agent 2 → behavioral_profile (uses probe_questions from Agent 1)
-Agent 3 → schema_findings (uses db context)
-Agent 4 → dax_findings (uses db context)
-Agent 5 → execution_findings (uses db context + cu_metrics)
-Agent 6 → synthesis (uses all_findings from 1-5 + behavioral_profile)
-Agent 7 → monte_carlo (uses traces + behavioral_profile)
-Agent 8 → remediation (uses all_findings + monte_carlo)
-Agent 9 → validation (uses monte_carlo + synthesis)
+Agent 1  --> domain, probe_questions
+Agent 2  --> behavioral_profile (uses probe_questions from Agent 1)
+                    +---------------------------------------------+
+                    |  Parallel block (ThreadPoolExecutor x5)      |
+Agent 3  --> schema_findings                                       |
+Agent 4  --> dax_findings                                          |
+Agent 5  --> dax_expression_findings (10 rules + DeepSeek LLM)    |
+Agent 6  --> xmla_findings                                         |
+Agent 7  --> execution_findings                                    |
+                    +---------------------------------------------+
+Agent 8  --> synthesis (uses all findings from 1-7)
+Agent 9  --> monte_carlo (uses traces + behavioral_profile)
+Agent 10 --> remediation (uses all findings + monte_carlo)
+                    +---------------------------------------------+
+                    |  Parallel block (ThreadPoolExecutor x2)      |
+Agent 11 --> finding_validator                                     |
+Agent 12 --> report_validator                                      |
+                    +---------------------------------------------+
 ```
 
-Total pipeline time: ~2 minutes with live DeepSeek V3.2 Speciale (~2s per LLM call).
+Total pipeline time: ~3-5 minutes with live models. Agents 3-7 run in parallel, reducing that segment by ~50-60%.
+
+### Timeout Configuration
+
+- **Agents 3-7 parallel block**: `timeout=180` seconds per agent
+- **Validators parallel block**: `timeout=180` seconds per validator
+
+### Retry Logic
+
+- **Pipeline-level**: 1 retry then fast fallback to DeepSeek
+- **Proxy-level timeouts**: 240s/360s/480s escalating for GPT-5.4 Pro
+
+### Model Routing
+
+| Agent | Default Model | Fallback |
+|-------|--------------|----------|
+| Domain Intelligence | gpt-5.4 | DeepSeek-V3.2-Speciale |
+| Schema, DAX, DAX Expression, Execution | DeepSeek-V3.2-Speciale | -- |
+| Synthesis, Remediation | gpt-5.4 | DeepSeek-V3.2-Speciale |
+| Monte Carlo | deterministic (no LLM) | -- |
+| Finding Validator, Report Validator | gpt-5.4 | DeepSeek-V3.2-Speciale |

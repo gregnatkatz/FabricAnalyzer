@@ -443,7 +443,7 @@ AGENT_CHROMA_QUERIES = {
     'domain_intelligence': 'fabric data agent domain classification semantic model',
     'schema': 'semantic model scope optimization prep for ai tables columns',
     'dax': 'fabric data agent DAX generation NL2DAX verified answers routing',
-    'dax_expression': 'DAX measure expression anti-patterns CALCULATE context iterator optimization',
+    'dax_expression': 'DAX measure expression anti-patterns CALCULATE iterator USERELATIONSHIP hardcoded date optimization',
     'execution': 'fabric data agent query execution VertiPaq Direct Lake performance',
     'synthesis': 'fabric data agent best practices optimization checklist',
     'remediation': 'prep for ai instructions verified answers schema scope optimization',

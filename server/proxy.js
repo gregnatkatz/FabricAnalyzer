@@ -1383,6 +1383,18 @@ function buildReportHtml(session) {
 </div></body></html>`;
 }
 
+// PDF preview — returns raw HTML for iframe display, no Puppeteer
+app.post('/api/pdf/preview', async (req, res) => {
+  try {
+    const html = buildReportHtml(req.body || {});
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  } catch (err) {
+    console.error('[pdf/preview] error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PDF export — server-side HTML rendering (no frontend dependency)
 app.post('/api/pdf', async (req, res) => {
   try {

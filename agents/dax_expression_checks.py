@@ -1,6 +1,6 @@
-"""Agent 3b -- DAX Expression Agent -- 8 Deterministic Rules analyzing measure DAX expressions.
+"""Agent 3b -- DAX Expression Agent -- 10 Deterministic Rules analyzing measure DAX expressions.
 
-Rules EX-1 through EX-8 operate on measures.expression to detect anti-patterns
+Rules EX-1 through EX-10 operate on measures.expression to detect anti-patterns
 without requiring XMLA access.
 """
 import re
@@ -8,7 +8,7 @@ import sqlite3
 
 
 def run_expression_checks(db_path):
-    """Run all 8 DAX expression rules on measures. Returns list of findings."""
+    """Run all 10 DAX expression rules on measures. Returns list of findings."""
     db = sqlite3.connect(db_path)
     db.row_factory = sqlite3.Row
     findings = []
@@ -124,6 +124,70 @@ def run_expression_checks(db_path):
                 'agent_id': 'dax_expression',
             })
 
+        # EX-9: Hardcoded year/month literals — demo-killer
+        # Matches YEAR([Date]) = 2023, [FiscalYear] = 2024, etc.
+        # These cause measures to silently return BLANK as time passes.
+        hardcoded_dates = re.findall(
+            r'(?:YEAR\s*\([^)]+\)\s*=\s*|=\s*)(\b20\d{2}\b)',
+            expr
+        )
+        col_year_literals = re.findall(
+            r'\[\w*(?:year|date|month|period|fy|cy)\w*\]\s*=\s*(\b20\d{2}\b)',
+            expr,
+            re.IGNORECASE
+        )
+        all_hardcoded = list(set(hardcoded_dates + col_year_literals))
+        if all_hardcoded:
+            years = ', '.join(all_hardcoded)
+            findings.append({
+                'issue': f'Hardcoded date literal(s) in measure "{name}": {years}',
+                'severity': 'CRITICAL',
+                'impact_ms': 9999,  # sentinel: always sorts to top of findings list
+                'evidence': (
+                    f'Expression contains hardcoded year value(s) {years}. '
+                    f'Once the current year advances past these values the measure '
+                    f'silently returns BLANK — queries succeed with no error but '
+                    f'the Data Agent returns empty results. Classic demo-killer.'
+                ),
+                'fix': (
+                    f'Replace hardcoded year(s) in "{name}" with dynamic expressions: '
+                    f'YEAR(TODAY()), YEAR(MAX(DateTable[Date])), or a fiscal year '
+                    f'parameter. Never use a literal 4-digit year in a measure '
+                    f'that will be used beyond the current reporting period.'
+                ),
+                'agent_id': 'dax_expression',
+            })
+
+        # EX-10: USERELATIONSHIP direction validation required
+        # USERELATIONSHIP(A[col], B[col]) activates an inactive relationship.
+        # Wrong column order (many-side listed second instead of first) silently
+        # produces incorrect aggregations with no error and no retry.
+        userel_matches = re.findall(
+            r'USERELATIONSHIP\s*\(\s*([^,]+),\s*([^)]+)\)',
+            expr,
+            re.IGNORECASE
+        )
+        for col_a, col_b in userel_matches:
+            col_a = col_a.strip()
+            col_b = col_b.strip()
+            findings.append({
+                'issue': f'USERELATIONSHIP in measure "{name}" — direction validation required',
+                'severity': 'HIGH',
+                'impact_ms': 4000,
+                'evidence': (
+                    f'Expression uses USERELATIONSHIP({col_a}, {col_b}). '
+                    f'If column order is reversed (many-side listed second instead of first) '
+                    f'the relationship activates in the wrong direction — aggregations return '
+                    f'incorrect values with no error and no retry. Silent wrong answer.'
+                ),
+                'fix': (
+                    f'Verify relationship direction for USERELATIONSHIP({col_a}, {col_b}). '
+                    f'Many-side column must be listed first: USERELATIONSHIP(FactTable[FK], DimTable[PK]). '
+                    f'Confirm in Power BI Desktop → Model view → relationship properties.'
+                ),
+                'agent_id': 'dax_expression',
+            })
+
     # Deduplicate
     seen = set()
     unique = []
@@ -140,7 +204,7 @@ def run_expression_checks_with_llm(db_path, proxy_url, chromadb_path, session_id
                                     domain, behavioral_evidence, agent_models,
                                     run_agent_with_llm_fn, merge_findings_fn,
                                     write_findings_fn):
-    """Run DAX Expression agent: 8 deterministic rules + DeepSeek LLM analysis.
+    """Run DAX Expression agent: 10 deterministic rules + DeepSeek LLM analysis.
 
     Calls run_expression_checks() first for the deterministic pass, then sends
     the measure list + deterministic findings to DeepSeek for pattern detection
@@ -151,7 +215,7 @@ def run_expression_checks_with_llm(db_path, proxy_url, chromadb_path, session_id
     import sqlite3
     import json
 
-    # Step 1: deterministic pass (existing 8 rules, fast, no LLM)
+    # Step 1: deterministic pass (existing 10 rules, fast, no LLM)
     det_findings = run_expression_checks(db_path)
 
     # Step 2: LLM pass via DeepSeek (fast, not a reasoning model)
