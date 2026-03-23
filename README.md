@@ -79,7 +79,7 @@ Slowest:            14.0s
 
 ### What the 12-Agent Pipeline Found
 
-The pipeline analyzed all 50 traces and identified **15 findings** with a combined **16.5s of estimated impact per query cycle**:
+The pipeline analyzed all 50 traces and identified **14 findings** with a combined **13.6s of estimated impact per query cycle**:
 
 ```
 Domain Intelligence:   Classified as Clinical Inpatient, identified zero verified answers
@@ -90,20 +90,20 @@ Synthesis:             Root cause ranking generated
 Monte Carlo:           500-iteration simulation computed
 Remediation:           Paste-ready AI instructions generated (1,882 chars)
 Finding Validator:     5 findings — Validated severity, flagged over-estimated savings
-Report Validator:      6 findings — Demo readiness UNKNOWN, quality gaps identified
+Report Validator:      5 findings — Demo readiness UNKNOWN, quality gaps identified
 ```
 
-**Severity breakdown:** 0 critical, 8 high, 7 medium — **16.5s total estimated latency impact**
+**Severity breakdown:** 0 critical, 7 high, 6 medium, 1 low — **13.6s total estimated latency impact**
 
 ### Top 3 Action Items (Biggest Impact)
 
-Fixing these 3 issues eliminates **68% of total impact** (11.2s of 16.5s):
+Fixing these 3 issues eliminates **80% of total impact** (10.9s of 13.6s):
 
 | # | Issue | Agent | Impact | Fix |
 |---|-------|-------|--------|-----|
 | 1 | **Zero verified answers configured** | Schema Agent | 6.0s | Add 8+ verified answer DAX patterns for high-frequency KPIs |
 | 2 | **Execution phase dominant (40% of total latency)** | Execution Agent | 2.9s | Apply V-Order optimization or check Direct Lake configuration |
-| 3 | **Additive savings over-estimated** | Finding Validator | 2.3s | Cap combined savings to modeled end-state projection |
+| 3 | **V-Order optimization not confirmed for Direct Lake model** | Execution Agent | 2.0s | Apply V-Order to Direct Lake tables |
 
 ### Monte Carlo Simulation Results
 
