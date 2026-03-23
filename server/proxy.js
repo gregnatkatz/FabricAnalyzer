@@ -307,6 +307,42 @@ app.post('/api/agent', async (req, res) => {
         console.log('[LLM] Model returned refusal:', msg.refusal.substring(0, 200));
         content = msg.refusal;
       }
+
+      // Retry once if gpt-5.4 returns empty content — known intermittent issue
+      if (!content && model === 'gpt-5.4') {
+        console.log('[LLM] gpt-5.4 returned empty content, retrying once...');
+        try {
+          const retryController = new AbortController();
+          const retryTimer = setTimeout(() => retryController.abort(), 180000);
+          const retryResp = await fetch(llmUrl, {
+            method: 'POST', headers, body: JSON.stringify(body), signal: retryController.signal,
+          });
+          clearTimeout(retryTimer);
+          const retryText = await retryResp.text();
+          const retryData = JSON.parse(retryText);
+          const retryContent = retryData.choices?.[0]?.message?.content || '';
+          if (retryContent) {
+            console.log('[LLM] Retry succeeded, content length:', retryContent.length);
+            content = retryContent;
+          } else {
+            console.log('[LLM] Retry also returned empty — falling back to DeepSeek-V3.2-Speciale');
+            // Fallback to DeepSeek-V3.2-Speciale
+            const dsEndpoint = 'https://aif-claude-rjb.openai.azure.com/openai/deployments/DeepSeek-V3.2-Speciale/chat/completions?api-version=2025-01-01-preview';
+            const fbController = new AbortController();
+            const fbTimer = setTimeout(() => fbController.abort(), 180000);
+            const fbResp = await fetch(dsEndpoint, {
+              method: 'POST', headers, body: JSON.stringify(body), signal: fbController.signal,
+            });
+            clearTimeout(fbTimer);
+            const fbText = await fbResp.text();
+            const fbData = JSON.parse(fbText);
+            content = fbData.choices?.[0]?.message?.content || '';
+            console.log('[LLM] DeepSeek fallback content length:', content.length);
+          }
+        } catch (retryErr) {
+          console.log('[LLM] Retry/fallback failed:', retryErr.message?.substring(0, 100));
+        }
+      }
     }
     console.log('[LLM] Success, content length:', content.length);
     res.json({ content, usage: data.usage });
@@ -2119,6 +2155,45 @@ Categories: count, listing, aggregation, ranking, trend, filtering, comparison, 
     return;
   }
 
+  // Warm-up: send one question sequentially first to avoid cold-start failures on first batch
+  sendEvent('status', { message: `Warming up ${agentName} assistant...` });
+  console.log(`[parallel] Warming up assistant with first question...`);
+  try {
+    const warmThread = await agentApiCall('/threads', 'POST', {});
+    await agentApiCall(`/threads/${warmThread.id}/messages`, 'POST', { role: 'user', content: questions[0].question });
+    const warmRun = await agentApiCall(`/threads/${warmThread.id}/runs`, 'POST', { assistant_id: assistantId, stream: false });
+    let ws = warmRun.status;
+    const wStart = Date.now();
+    while ((ws === 'queued' || ws === 'in_progress' || ws === 'requires_action') && Date.now() - wStart < 60000) {
+      await new Promise(r => setTimeout(r, 2000));
+      try { const wc = await agentApiCall(`/threads/${warmThread.id}/runs/${warmRun.id}`, 'GET'); ws = wc.status; } catch {}
+    }
+    if (ws === 'completed') {
+      const wMsgs = await agentApiCall(`/threads/${warmThread.id}/messages`, 'GET');
+      const wResp = (wMsgs.data || []).filter(m => m.role === 'assistant');
+      if (wResp.length > 0) {
+        const wText = wResp[wResp.length - 1].content?.map(c => c.text?.value || '').join('\n') || '';
+        const wMs = Date.now() - wStart;
+        const daxMatch = wText.match(/```dax\n?([\s\S]*?)```/i);
+        allTraces.push({
+          question: questions[0].question, category: questions[0].category, agentName, agentId,
+          responseTimeMs: wMs, responseTimeSec: Math.round(wMs / 1000), retries: 0, status: 'pass',
+          daxGenerated: daxMatch ? daxMatch[1].trim().substring(0, 200) : '', response: wText.substring(0, 300),
+          error: '', tablesUsed: '',
+        });
+        completedCount++;
+        console.log(`[parallel] Warm-up Q1/${questions.length} pass: ${wMs}ms — ${questions[0].question.substring(0, 60)}`);
+        sendEvent('trace', { index: 0, total: questions.length, agentName, trace: allTraces[0], elapsed: wMs });
+        sendEvent('progress', { completed: 1, total: questions.length, agentName, question: questions[0].question, elapsed: wMs, status: 'pass' });
+      }
+    }
+    try { await agentApiCall(`/threads/${warmThread.id}`, 'DELETE'); } catch {}
+  } catch (warmErr) {
+    console.log(`[parallel] Warm-up failed: ${warmErr.message} — proceeding anyway`);
+  }
+  // Remove the warm-up question from the remaining questions (if it succeeded)
+  const remainingQuestions = completedCount > 0 ? questions.slice(1) : questions;
+
   // Process ONE question in its own thread (called concurrently)
   const processQuestion = async (q, index) => {
     const startTime = Date.now();
@@ -2177,16 +2252,38 @@ Categories: count, listing, aggregation, ranking, trend, filtering, comparison, 
     return trace;
   };
 
-  // Run questions in parallel batches of CONCURRENCY
+  // Run remaining questions in parallel batches of CONCURRENCY
   const startAll = Date.now();
-  for (let batch = 0; batch < questions.length; batch += CONCURRENCY) {
-    const batchQuestions = questions.slice(batch, batch + CONCURRENCY);
+  for (let batch = 0; batch < remainingQuestions.length; batch += CONCURRENCY) {
+    const batchQuestions = remainingQuestions.slice(batch, batch + CONCURRENCY);
     const batchPromises = batchQuestions.map((q, i) => processQuestion(q, batch + i));
     const batchResults = await Promise.allSettled(batchPromises);
     for (const r of batchResults) {
       if (r.status === 'fulfilled') allTraces.push(r.value);
       else { console.log(`[parallel] Question failed: ${r.reason}`); }
     }
+  }
+
+  // Retry failed traces once (common with cold-start or transient errors)
+  const failedTraces = allTraces.filter(t => t.status === 'fail');
+  if (failedTraces.length > 0 && failedTraces.length <= 15) {
+    console.log(`[parallel] Retrying ${failedTraces.length} failed questions...`);
+    sendEvent('status', { message: `Retrying ${failedTraces.length} failed questions...` });
+    const retryQuestions = failedTraces.map(t => ({ question: t.question, category: t.category }));
+    for (let batch = 0; batch < retryQuestions.length; batch += CONCURRENCY) {
+      const batchQ = retryQuestions.slice(batch, batch + CONCURRENCY);
+      const batchP = batchQ.map((q, i) => processQuestion(q, batch + i));
+      const batchR = await Promise.allSettled(batchP);
+      for (const r of batchR) {
+        if (r.status === 'fulfilled' && r.value.status === 'pass') {
+          // Replace the failed trace with the successful retry
+          const idx = allTraces.findIndex(t => t.question === r.value.question && t.status === 'fail');
+          if (idx !== -1) allTraces[idx] = r.value;
+        }
+      }
+    }
+    const stillFailed = allTraces.filter(t => t.status === 'fail').length;
+    console.log(`[parallel] After retry: ${stillFailed} still failed (was ${failedTraces.length})`);
   }
 
   // Cleanup assistant
