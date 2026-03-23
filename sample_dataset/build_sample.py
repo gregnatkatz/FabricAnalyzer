@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS column_stats (
     cardinality INTEGER,
     data_size_mb REAL,
     segment_count INTEGER,
+    reference_count INTEGER DEFAULT -1,
     captured_at TEXT
 );
 

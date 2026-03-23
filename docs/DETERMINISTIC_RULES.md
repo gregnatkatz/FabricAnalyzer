@@ -1,6 +1,6 @@
 # Deterministic Rules Reference
 
-FabricAnalyzer uses 31 deterministic rules that run without any LLM call. These rules provide baseline detection of common Fabric Data Agent latency issues, ensuring the tool produces actionable findings even without Azure AI access.
+FabricAnalyzer uses 38 deterministic rules that run without any LLM call. These rules provide baseline detection of common Fabric Data Agent latency issues, ensuring the tool produces actionable findings even without Azure AI access.
 
 ## Overview
 
@@ -10,6 +10,7 @@ FabricAnalyzer uses 31 deterministic rules that run without any LLM call. These 
 | DAX Expression Agent | 10 | `measures.expression` | Measure DAX expression anti-patterns |
 | DAX Agent | 9 | `traces` (per-trace + global) | DAX generation patterns and routing |
 | Execution Agent | 9 | `traces`, `cu_metrics`, `models`, `tables` | Runtime performance and infrastructure |
+| XMLA Agent | 7 | `column_stats`, `relationship_stats` | Deep model analysis (VertiPaq, relationships, orphaned columns) |
 
 Combined acceptance test detection rate: **80% (20/25 known issues)**, false positive rate: **15% (4/26)**.
 
@@ -348,6 +349,76 @@ These rules analyze the `expression` field of each measure in the semantic model
 - **Impact**: 3000ms
 - **Why**: Large tables near capacity limits may silently fall back to DirectQuery mode, which is significantly slower.
 - **Fix**: Monitor for DirectQuery fallback; consider partitioning.
+
+---
+
+## XMLA Agent Rules (7)
+
+These rules analyze `column_stats` and `relationship_stats` collected via DAX INFO functions (Strategy 1) or the Fabric Admin Scanner API (Strategy 2). They detect VertiPaq storage issues, relationship anti-patterns, and orphaned columns.
+
+### Rule XM-1: High Cardinality Column
+
+- **Condition**: `cardinality > 1,000,000`
+- **Severity**: HIGH
+- **Impact**: `cardinality / 100K * 100ms`
+- **Why**: VertiPaq dictionary encoding is inefficient above 1M distinct values, increasing memory and query time.
+- **Fix**: Consider bucketing or hashing the column to reduce cardinality, or exclude from model if unused.
+
+### Rule XM-2: Large Column Storage
+
+- **Condition**: `data_size_mb > 50`
+- **Severity**: HIGH
+- **Impact**: `size_mb * 20ms`
+- **Why**: Large columns slow scan operations and increase memory pressure.
+- **Fix**: Review if the column needs full precision — consider aggregation or removing unused columns.
+
+### Rule XM-3: Bidirectional Cross-Filter
+
+- **Condition**: Relationship has `cross_filter` = BothDirections/Both/Bidirectional
+- **Severity**: HIGH
+- **Impact**: 1500ms
+- **Why**: Bidirectional cross-filtering causes VertiPaq to evaluate filters in both directions — exponential cost with multiple bidir relationships.
+- **Fix**: Change to single-direction unless bidirectional is specifically required by a measure.
+
+### Rule XM-4: Excessive Inactive Relationships
+
+- **Condition**: More than 2 inactive relationships in model
+- **Severity**: MEDIUM
+- **Impact**: `count * 100ms`
+- **Why**: Inactive relationships add model complexity without benefit unless used via USERELATIONSHIP().
+- **Fix**: Remove those not referenced by USERELATIONSHIP() in any measure.
+
+### Rule XM-5: High Segment Count
+
+- **Condition**: `segment_count > 10`
+- **Severity**: MEDIUM
+- **Impact**: `segments * 50ms`
+- **Why**: High segment count indicates suboptimal partitioning or very large table, reducing scan efficiency.
+- **Fix**: Consider repartitioning or enabling V-Order optimization to reduce segment count.
+
+### Rule XM-6: Many-to-Many Relationship
+
+- **Condition**: Both sides of relationship have cardinality > 1
+- **Severity**: CRITICAL
+- **Impact**: 3000ms
+- **Why**: Many-to-many relationships cause fan-out that multiplies row counts during queries.
+- **Fix**: Add a bridge table to resolve the many-to-many, or use TREATAS for virtual relationships.
+
+### Rule XM-7: Orphaned Column (0 Measure References)
+
+- **Condition**: `reference_count == 0` (from INFO.CALCDEPENDENCY())
+- **Severity**: HIGH (non-key columns) / MEDIUM (key-like columns)
+- **Impact**: `size_mb * 15ms` (min 200ms) for non-key / 100ms for key-like
+- **Why**: Column is physically present in the model yet never referenced by any measure, relationship, or calculated column. These are pure overhead — they consume VertiPaq memory and slow scan operations even though the Data Agent never touches them.
+- **Fix**: Remove the column from the semantic model in Power BI Desktop (not just hide it — physical removal reclaims VertiPaq memory). If the column is needed for future use, move it to a staging layer instead.
+- **Example finding**: `Orphaned column: FactEncounters.BatchID — never referenced by any measure`
+
+> **XM-7 requires XMLA collection with INFO.CALCDEPENDENCY() data.**
+> Fires only when `reference_count = 0` — columns where the DMV returned
+> no data show `reference_count = -1` and are skipped. Key-like column names
+> (containing id, key, pk, fk, code, guid, uuid) are downgraded to MEDIUM
+> since they may be used as relationship join columns not captured by
+> CALCDEPENDENCY.
 
 ---
 

@@ -2,15 +2,15 @@
 
 ## Executive Summary
 
-**What it is:** A locally-installed diagnostic tool that connects to your Microsoft Fabric workspace, analyzes your Data Agents using an 11-agent AI pipeline (GPT-5.4 Pro + DeepSeek V3.2 Speciale), identifies latency bottlenecks, runs Monte Carlo simulations, and generates paste-ready fix artifacts with PDF reports.
+**What it is:** A locally-installed diagnostic tool that connects to your Microsoft Fabric workspace, analyzes your Data Agents using a 12-agent AI pipeline (GPT-5.4 + DeepSeek V3.2 Speciale), identifies latency bottlenecks, runs Monte Carlo simulations, and generates paste-ready fix artifacts with PDF reports. I built this as an open-source project to help Fabric developers diagnose and fix Data Agent performance issues.
 
 **What it isn't:** This is not a monitoring dashboard, a replacement for Fabric Capacity Metrics, or a general-purpose BI tool. It's a focused diagnostic analyzer that tells you *why* your Data Agent is slow and *exactly* how to fix it.
 
-**Why it matters:** Every Fabric Data Agent ships with default configuration. Without validation, agents accumulate anti-patterns — schema bloat, ambiguous measures, missing verified answers, poor routing instructions — that compound into 3-4x latency above SLA. This tool finds those issues before your users do.
+**Why it matters:** Every Fabric Data Agent starts with default configuration. Without validation, agents accumulate anti-patterns — schema bloat, ambiguous measures, missing verified answers, poor routing instructions — that compound into 3-4x latency above SLA. This tool finds those issues before your users do.
 
 ### Fabric Workspace Assets
 
-The analyzer ships with **10 real healthcare Data Agents** deployed in a Fabric workspace, each with intentionally bad configurations to test the analyzer's detection capabilities:
+The analyzer includes **10 real healthcare Data Agents** deployed in a Fabric workspace, each with intentionally bad configurations to test the analyzer's detection capabilities:
 
 | # | Semantic Model | Data Agent | Domain | Tables | Anti-Patterns |
 |---|---------------|------------|--------|--------|---------------|
@@ -32,7 +32,7 @@ The analyzer ships with **10 real healthcare Data Agents** deployed in a Fabric 
 
 - **Mixed Model AI Pipeline** — GPT-5.4 for validators + DeepSeek V3.2 Speciale for analysis agents, with per-agent model selection and automatic retry with fallback
 - **Smart Retry Logic** — 2-attempt retry for all models (180s timeout each), gpt-5.4 empty content detection with DeepSeek fallback, cold-start warm-up for parallel collection
-- **29 Deterministic Rules + 500 RAG Patterns** — Schema, DAX, execution, XMLA, and DAX expression analysis with ChromaDB knowledge base
+- **38 Deterministic Rules + 500 RAG Patterns** — Schema, DAX, execution, XMLA (7 rules incl. orphaned column detection), and DAX expression analysis with ChromaDB knowledge base
 - **PDF Report Export** — Puppeteer-rendered PDF with executive summary, root cause ranking, before/after comparison, CU cost correlation, and fix recommendations
 - **Monte Carlo Simulation** — 500-iteration client-side math model with instant fix toggle projections
 - **CU Cost Correlation** — AI CU, Query CU, Throttle Events, P50/P95 latency with estimated CU savings
@@ -149,8 +149,8 @@ View all collected traces with latency breakdowns (Schema/DAX/Execution), retry 
 
 ![Traces Tab](docs/screenshots/02-traces-tab.png)
 
-### Workflow Tab — 11-Agent Pipeline with Mixed Models
-Run the full 11-agent analysis pipeline with per-agent model selection, real-time progress bar, elapsed timer, and agent completion counter. Choose from GPT-5.4 Pro, DeepSeek V3.2 Speciale, DeepSeek V3.2, or GPT-4o for each agent. GPT-5.4 Pro uses Azure's Responses API with compressed prompts and smart retry logic (escalating timeouts 240s/360s/480s).
+### Workflow Tab — 12-Agent Pipeline with Mixed Models
+Run the full 12-agent analysis pipeline with per-agent model selection, real-time progress bar, elapsed timer, and agent completion counter. Choose from GPT-5.4 Pro, DeepSeek V3.2 Speciale, DeepSeek V3.2, or GPT-4o for each agent. GPT-5.4 Pro uses Azure's Responses API with compressed prompts and smart retry logic (escalating timeouts 240s/360s/480s).
 
 ![Workflow Tab](docs/screenshots/03-workflow-tab.png)
 
@@ -195,7 +195,7 @@ Select fixes to validate with a 4-phase validation pipeline: baseline battery, f
                          │ subprocess spawn
 ┌────────────────────────▼─────────────────────────────────────┐
 │               Python Backend                                  │
-│  agents/ — 11-agent pipeline (29 deterministic + 500 RAG)     │
+│  agents/ — 12-agent pipeline (38 deterministic + 500 RAG)     │
 │  knowledge/ — ChromaDB RAG (540 chunks: 40 docs + 500 issues) │
 │  knowledge/ — MS Learn integration (12 articles, 70+ practices)│
 │  collector/ — Fabric API + XMLA (Admin Scanner API)           │
@@ -204,7 +204,7 @@ Select fixes to validate with a 4-phase validation pipeline: baseline battery, f
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## 11-Agent Pipeline
+## 12-Agent Pipeline
 
 | # | Agent | Model Default | Purpose |
 |---|-------|---------------|---------|
@@ -214,11 +214,12 @@ Select fixes to validate with a 4-phase validation pipeline: baseline battery, f
 | 4 | DAX Agent | DeepSeek V3.2 Speciale | 9 deterministic rules + LLM DAX pattern analysis |
 | 5 | DAX Expression Agent | DeepSeek V3.2 Speciale | Deep DAX expression analysis (nesting, iterators, anti-patterns) |
 | 6 | Execution Agent | DeepSeek V3.2 Speciale | 9 deterministic rules + LLM execution analysis |
-| 7 | XMLA Agent | DeepSeek V3.2 Speciale | XMLA DMV analysis (column stats, relationships, cardinality) |
-| 8 | Synthesis Agent | GPT-5.4 Pro | Root cause ranking, demo readiness verdict |
+| 7 | XMLA Agent | DeepSeek V3.2 Speciale | XMLA DMV analysis (7 rules: cardinality, storage, relationships, orphaned columns) |
+| 8 | Synthesis Agent | GPT-5.4 | Root cause ranking, demo readiness verdict |
 | 9 | Monte Carlo Agent | DeepSeek V3.2 Speciale | Calibrated distributions, P10/P50/P90 per fix |
-| 10 | Remediation Agent | GPT-5.4 Pro | Paste-ready artifacts for Prep for AI |
-| 11 | Validation Agent | GPT-5.4 Pro | On-demand fix validation with before/after |
+| 10 | Remediation Agent | DeepSeek V3.2 Speciale | Paste-ready artifacts for Prep for AI |
+| 11 | Finding Validator | GPT-5.4 | Validates severity ratings, flags over-estimated impacts |
+| 12 | Report Validator | GPT-5.4 | Validates report quality, demo readiness consistency |
 
 ## Available Models
 
@@ -366,13 +367,13 @@ Follow these steps to connect the analyzer to your Microsoft Fabric workspace an
 
 1. Go to the **Workflow** tab
 2. Select which Azure AI model to use for each agent (optional — defaults are pre-configured)
-3. Click **Run Analysis** — the 11-agent pipeline runs (with progress bar and elapsed timer):
+3. Click **Run Analysis** — the 12-agent pipeline runs (with progress bar and elapsed timer):
    - Agents 1-2: Domain intelligence + adversarial probing
-   - Agents 3-5: Schema, DAX, and execution analysis (29 deterministic rules + LLM)
-   - Agent 6: Synthesis — root cause ranking and demo readiness verdict
-   - Agent 7: Monte Carlo — 500 iterations, P10/P50/P90 projections
-   - Agent 8: Remediation — paste-ready fix artifacts
-   - Agent 9: Validation — fix effectiveness assessment
+   - Agents 3-7: Schema, DAX, DAX Expression, XMLA, and Execution analysis (38 deterministic rules + LLM) — runs in parallel
+   - Agent 8: Synthesis — root cause ranking and demo readiness verdict
+   - Agent 9: Monte Carlo — deterministic math model, instant projections
+   - Agent 10: Remediation — paste-ready fix artifacts
+   - Agents 11-12: Finding Validator + Report Validator — runs in parallel
 
 #### Step 6: Review Findings & Simulate Fixes
 
@@ -470,7 +471,7 @@ The tool includes a comprehensive catalog of **500 known latency issues** across
 | Monitoring | 20 | No alerting, no baseline, no trend analysis |
 | Cross-Agent | 20 | Inconsistent configs, routing confusion, drift |
 
-## 29 Deterministic Rules (Pre-Checks)
+## 38 Deterministic Rules (Pre-Checks)
 
 ### Schema (11 rules)
 - Instruction char limit exceeded (>4800) — CRITICAL
@@ -507,6 +508,15 @@ The tool includes a comprehensive catalog of **500 known latency issues** across
 - V-Order not confirmed for Direct Lake — MEDIUM
 - Direct Lake framing risk — HIGH
 
+### XMLA (7 rules)
+- High cardinality column (>1M distinct) — HIGH
+- Large column storage (>50 MB) — HIGH
+- Bidirectional cross-filter — HIGH
+- Excessive inactive relationships (>2) — MEDIUM
+- High segment count (>10) — MEDIUM
+- Many-to-many relationship — CRITICAL
+- Orphaned column (0 measure references) — HIGH / MEDIUM (key-like)
+
 ## Acceptance Test Results
 
 ```
@@ -524,7 +534,7 @@ Total deterministic findings: 26
 | `/api/sample` | POST | Load sample dataset (returns traces, findings, CU metrics) |
 | `/api/sample/scenario` | POST | Load specific test scenario by ID |
 | `/api/scenarios` | GET | List available test scenarios |
-| `/api/analyze` | POST | Run 11-agent analysis pipeline |
+| `/api/analyze` | POST | Run 12-agent analysis pipeline |
 | `/api/validate` | POST | Run 4-phase validation (SSE stream) |
 | `/api/pdf` | POST | Export PDF report via Puppeteer (accepts full session data) |
 | `/api/reset` | POST | Reset session data |

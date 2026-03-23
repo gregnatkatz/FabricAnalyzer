@@ -1,13 +1,13 @@
-"""Agent XM -- XMLA Deep Analysis -- 6 Deterministic Rules on column_stats and relationship_stats.
+"""Agent XM -- XMLA Deep Analysis -- 7 Deterministic Rules on column_stats and relationship_stats.
 
-Rules XM-1 through XM-6 operate on XMLA DMV data for deep model analysis.
+Rules XM-1 through XM-7 operate on XMLA DMV data for deep model analysis.
 These rules require XMLA collection to have been run first (tables may be empty).
 """
 import sqlite3
 
 
 def run_xmla_checks(db_path):
-    """Run all 6 XMLA rules on column_stats and relationship_stats. Returns list of findings."""
+    """Run all 7 XMLA rules on column_stats and relationship_stats. Returns list of findings."""
     db = sqlite3.connect(db_path)
     db.row_factory = sqlite3.Row
     findings = []
@@ -106,6 +106,74 @@ def run_xmla_checks(db_path):
                 'evidence': f'Relationship has cardinality {from_card}:{to_card} -- many-to-many relationships cause fan-out that multiplies row counts during queries',
                 'impact_ms': 3000,
                 'fix': f'Add a bridge table between {rs["from_table"]} and {rs["to_table"]} to resolve the many-to-many, or use TREATAS for virtual relationships',
+                'agent_id': 'xmla',
+            })
+
+    # XM-7: Orphaned columns — present in model but never referenced
+    # reference_count = 0 means INFO.CALCDEPENDENCY() found zero references
+    # to this column across all measures, calculated columns, and relationships.
+    # reference_count = -1 means the data was not available (query not run).
+    # Only fire when reference_count is explicitly 0 — never on -1.
+    for cs in col_stats:
+        ref_count = cs.get('reference_count', -1)
+        if ref_count != 0:
+            continue  # -1 = unknown, >0 = referenced — skip both
+
+        table_name  = cs.get('table_name', '')
+        column_name = cs.get('column_name', '')
+        size_mb     = cs.get('data_size_mb', 0) or 0
+        cardinality = cs.get('cardinality', 0) or 0
+
+        # Skip key columns and ID-like columns — these may be used by
+        # relationships even if not by measures (relationship stats are
+        # separate from CALCDEPENDENCY)
+        col_lower = column_name.lower()
+        likely_key = any(x in col_lower for x in
+                         ('id', 'key', 'pk', 'fk', 'code', 'guid', 'uuid'))
+        if likely_key:
+            # Downgrade to MEDIUM and note it may be a relationship key
+            findings.append({
+                'issue': (
+                    f'Possibly orphaned key column: '
+                    f'{table_name}.{column_name} — no measure references found'
+                ),
+                'severity': 'MEDIUM',
+                'evidence': (
+                    f'{table_name}.{column_name} has 0 measure references in '
+                    f'INFO.CALCDEPENDENCY(). It may still be used as a '
+                    f'relationship key — verify before removing.'
+                ),
+                'impact_ms': 100,
+                'fix': (
+                    f'Verify {table_name}.{column_name} is not used as a '
+                    f'relationship join key. If unused, hide or remove it from '
+                    f'the model in Power BI Desktop.'
+                ),
+                'agent_id': 'xmla',
+            })
+        else:
+            # Non-key column with zero references — high confidence orphan
+            findings.append({
+                'issue': (
+                    f'Orphaned column: {table_name}.{column_name} '
+                    f'— never referenced by any measure'
+                ),
+                'severity': 'HIGH',
+                'evidence': (
+                    f'{table_name}.{column_name} has 0 references in '
+                    f'INFO.CALCDEPENDENCY() across all measures and calculated '
+                    f'columns. It occupies {size_mb:.1f} MB and {cardinality:,} '
+                    f'distinct values in VertiPaq — pure overhead the Data Agent '
+                    f'never uses.'
+                ),
+                'impact_ms': max(int(size_mb * 15), 200),
+                # 15ms per MB — rough scan overhead estimate
+                'fix': (
+                    f'Remove {table_name}.{column_name} from the semantic model '
+                    f'in Power BI Desktop (not just hide it — physical removal '
+                    f'reclaims VertiPaq memory). If the column is needed for '
+                    f'future use, move it to a staging layer instead.'
+                ),
                 'agent_id': 'xmla',
             })
 
