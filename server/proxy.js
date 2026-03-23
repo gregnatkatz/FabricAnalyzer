@@ -1431,13 +1431,12 @@ app.get('/api/fabric/scan-agents', async (req, res) => {
     return res.status(400).json({ error: 'workspaceId and token required' });
   }
   try {
-    const { spawn } = require('child_process');
     const py = spawn('python3', ['-c', `
 import sys, json
 sys.path.insert(0, '.')
 from collector.fabric_collector import scan_agents
 print(json.dumps(scan_agents('${workspaceId}', '${token}')))
-`], { cwd: process.env.PYTHON_BACKEND_DIR || path.resolve(__dirname, '..') });
+`], { cwd: process.env.PYTHON_BACKEND_DIR || resolve(__dirname, '..') });
     let out = '';
     let err = '';
     py.stdout.on('data', d => { out += d.toString(); });
@@ -1462,7 +1461,6 @@ app.post('/api/fabric/apply-fixes', async (req, res) => {
     });
   }
   try {
-    const { spawn } = require('child_process');
     const input = JSON.stringify({
       workspace_id: workspaceId,
       artifact_id: artifactId,
@@ -1480,7 +1478,7 @@ result = apply_all_fixes(
     data['remediation_output'], data.get('dry_run', True)
 )
 print(json.dumps(result))
-`], { cwd: process.env.PYTHON_BACKEND_DIR || path.resolve(__dirname, '..') });
+`], { cwd: process.env.PYTHON_BACKEND_DIR || resolve(__dirname, '..') });
     let out = '', err = '';
     py.stdin.write(input);
     py.stdin.end();
