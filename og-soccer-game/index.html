@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- iPhone-friendly: fit the screen, no zoom, allow fullscreen web-app -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#1b8a3a" />
+<title>OG Soccer Smash</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #0c3d1c;
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+    -webkit-user-select: none; user-select: none;
+    touch-action: none;
+  }
+  #wrap {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 50% 30%, #1b8a3a, #0c3d1c);
+  }
+  canvas { display: block; touch-action: none; }
+
+  /* Overlay screens (menus, win/lose) */
+  .screen {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; color: #fff; padding: 24px;
+    background: rgba(6, 30, 14, 0.82);
+    backdrop-filter: blur(4px);
+  }
+  .hidden { display: none !important; }
+  .title {
+    font-size: 12vw; font-weight: 900; letter-spacing: 1px;
+    color: #ffe14d; text-shadow: 0 4px 0 #b8860b, 0 6px 14px rgba(0,0,0,.6);
+    line-height: 1.05;
+  }
+  .title small { display:block; font-size: 5vw; color:#7fe0ff; text-shadow:none; margin-top:6px; }
+  .sub { font-size: 4.6vw; margin: 14px 0 22px; color: #dff7e3; max-width: 560px; line-height:1.4; }
+  .btn {
+    font-size: 6vw; font-weight: 800; color: #06210c;
+    background: linear-gradient(#ffe14d, #f5b301);
+    border: none; border-radius: 999px;
+    padding: 16px 42px; margin: 8px;
+    box-shadow: 0 5px 0 #9c6b00, 0 8px 18px rgba(0,0,0,.4);
+    cursor: pointer; transition: transform .05s;
+  }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #9c6b00; }
+  .btn.alt { background: linear-gradient(#7fe0ff, #2bb3e0); box-shadow:0 5px 0 #15627d,0 8px 18px rgba(0,0,0,.4); }
+  .levels { display:flex; gap:14px; flex-wrap:wrap; justify-content:center; margin-top:6px; }
+  .levelBtn {
+    width: 22vw; max-width:120px; height:22vw; max-height:120px;
+    border-radius: 22px; border:none; cursor:pointer;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    font-weight:900; color:#06210c;
+    background: linear-gradient(#bdffce,#7be38f);
+    box-shadow:0 5px 0 #2e7d43, 0 8px 16px rgba(0,0,0,.35);
+  }
+  .levelBtn .num { font-size:9vw; }
+  .levelBtn .lbl { font-size:3vw; }
+  .levelBtn:active { transform: translateY(3px); }
+  .levelBtn.locked { background:linear-gradient(#666,#444); color:#bbb; box-shadow:0 5px 0 #222; }
+  .footer { position:fixed; bottom: env(safe-area-inset-bottom, 10px); font-size:3.4vw; color:#bfe9c8; opacity:.8; }
+  @media (min-width: 760px){
+    .title{font-size:84px} .title small{font-size:30px} .sub{font-size:22px}
+    .btn{font-size:26px} .levelBtn .num{font-size:54px} .levelBtn .lbl{font-size:16px}
+    .footer{font-size:16px}
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+
+<!-- START / MENU -->
+<div id="menu" class="screen">
+  <div class="title">OG SOCCER<small>SMASH ⚽️</small></div>
+  <div class="sub">You are <b>OG</b>, the big blue horned monster!
+  Drag OG with your finger to dribble, then <b>flick</b> to blast the ball
+  past the little monsters and score goals. Beat all 3 levels!</div>
+  <button class="btn" id="playBtn">PLAY ▶</button>
+  <div class="footer">Tip: add to Home Screen for fullscreen play</div>
+</div>
+
+<!-- LEVEL SELECT -->
+<div id="levelSelect" class="screen hidden">
+  <div class="title" style="font-size:8vw">CHOOSE A LEVEL</div>
+  <div class="levels" id="levelButtons"></div>
+  <button class="btn alt" id="backBtn" style="margin-top:24px">◀ Back</button>
+</div>
+
+<!-- RESULT (win/lose) -->
+<div id="result" class="screen hidden">
+  <div class="title" id="resultTitle">GOAL!</div>
+  <div class="sub" id="resultText"></div>
+  <div>
+    <button class="btn" id="nextBtn">NEXT ▶</button>
+    <button class="btn alt" id="retryBtn">RETRY ⟳</button>
+  </div>
+  <button class="btn alt" id="menuBtn" style="margin-top:14px;font-size:4.5vw;padding:12px 30px">Levels</button>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+// ----------------------------------------------------------------------------
+// Setup & high-DPI canvas (the field is drawn in a fixed virtual coord system,
+// then scaled to fill the phone screen so it looks crisp on Retina displays.)
+// ----------------------------------------------------------------------------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Virtual play field (portrait, like a phone). All game math uses these units.
+const W = 600, H = 900;
+let scale = 1, offX = 0, offY = 0;
+
+function resize() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  // Fit the 600x900 field into the screen, keeping aspect ratio (letterboxed).
+  scale = Math.min(vw / W, vh / H);
+  const cssW = W * scale, cssH = H * scale;
+  offX = (vw - cssW) / 2;
+  offY = (vh - cssH) / 2;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  canvas.style.position = 'fixed';
+  canvas.style.left = offX + 'px';
+  canvas.style.top = offY + 'px';
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', resize);
+resize();
+
+// Convert a touch/mouse point (screen px) into virtual field coords.
+function toField(clientX, clientY) {
+  return { x: (clientX - offX) / scale, y: (clientY - offY) / scale };
+}
+
+// ----------------------------------------------------------------------------
+// Tiny sound engine (WebAudio beeps — no asset files needed).
+// ----------------------------------------------------------------------------
+let actx = null;
+function beep(freq, dur, type, vol) {
+  try {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type || 'sine'; o.frequency.value = freq;
+    g.gain.value = vol || 0.15;
+    o.connect(g); g.connect(actx.destination);
+    const t = actx.currentTime;
+    o.start(t);
+    g.gain.setValueAtTime(g.gain.value, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.stop(t + dur);
+  } catch (e) {}
+}
+const sfx = {
+  kick:  () => beep(180, 0.12, 'square', 0.18),
+  goal:  () => { beep(523,0.12,'square',0.2); setTimeout(()=>beep(659,0.12,'square',0.2),110); setTimeout(()=>beep(784,0.22,'square',0.2),230); },
+  bump:  () => beep(110, 0.08, 'sawtooth', 0.12),
+  steal: () => beep(90, 0.18, 'sawtooth', 0.18),
+  win:   () => { [523,587,659,784,1047].forEach((f,i)=>setTimeout(()=>beep(f,0.18,'square',0.2), i*120)); },
+};
+
+// ----------------------------------------------------------------------------
+// Level configuration — 3 levels, increasing difficulty.
+// ----------------------------------------------------------------------------
+const LEVELS = [
+  { name:'Backyard Kickoff', monsters:3, speed:1.1, goalsToWin:3, time:60, goalW:240, monsterColor:'#ff8a3d' },
+  { name:'Monster Park',     monsters:5, speed:1.55, goalsToWin:4, time:55, goalW:200, monsterColor:'#c06bff' },
+  { name:'Stadium Showdown', monsters:7, speed:2.0, goalsToWin:5, time:50, goalW:170, monsterColor:'#ff4d6d' },
+];
+
+// ----------------------------------------------------------------------------
+// Game state
+// ----------------------------------------------------------------------------
+const GOAL_Y = 70;          // top goal line
+const GOAL_DEPTH = 46;
+const game = {
+  level: 0,
+  state: 'menu',            // menu | playing | won | lost
+  score: 0, target: 3,
+  timeLeft: 60,
+  particles: [],
+  shake: 0,
+  flash: 0,                 // green goal flash
+  unlocked: 1,             // how many levels unlocked
+};
+
+// OG the hero monster
+const og = {
+  x: W/2, y: H - 200, r: 52,
+  vx: 0, vy: 0,
+  hasBall: false,
+};
+
+// The ball
+const ball = {
+  x: W/2, y: H/2, r: 18, vx: 0, vy: 0,
+};
+
+// Little monster opponents
+let monsters = [];
+
+// Touch / drag tracking for OG
+const drag = {
+  active: false,
+  px: 0, py: 0,          // previous finger pos (for flick velocity)
+  vx: 0, vy: 0,          // smoothed finger velocity
+};
+
+// ----------------------------------------------------------------------------
+// Persistence (remember unlocked levels)
+// ----------------------------------------------------------------------------
+try {
+  const u = parseInt(localStorage.getItem('og_unlocked') || '1', 10);
+  if (u >= 1 && u <= 3) game.unlocked = u;
+} catch(e){}
+function saveUnlocked(){ try{ localStorage.setItem('og_unlocked', String(game.unlocked)); }catch(e){} }
+
+// ----------------------------------------------------------------------------
+// Start / reset a level
+// ----------------------------------------------------------------------------
+function startLevel(idx) {
+  game.level = idx;
+  const L = LEVELS[idx];
+  game.state = 'playing';
+  game.score = 0;
+  game.target = L.goalsToWin;
+  game.timeLeft = L.time;
+  game.particles = [];
+  game.shake = 0; game.flash = 0;
+
+  og.x = W/2; og.y = H - 200; og.vx = 0; og.vy = 0; og.hasBall = false;
+  resetBall(true);
+
+  monsters = [];
+  for (let i = 0; i < L.monsters; i++) {
+    monsters.push({
+      x: 80 + Math.random() * (W - 160),
+      y: 250 + Math.random() * (H - 520),
+      r: 26 + Math.random() * 6,
+      vx: 0, vy: 0,
+      hue: i,
+      wob: Math.random() * Math.PI * 2,
+      stunTime: 0,
+    });
+  }
+  hideAllScreens();
+  lastT = performance.now();
+}
+
+function resetBall(center) {
+  if (center) { ball.x = W/2; ball.y = H/2; }
+  ball.vx = 0; ball.vy = 0;
+  og.hasBall = false;
+}
+
+// ----------------------------------------------------------------------------
+// Input handling
+// ----------------------------------------------------------------------------
+function onDown(x, y) {
+  if (game.state !== 'playing') return;
+  const p = toField(x, y);
+  // Grab OG if you press near him (generous radius for easy touch).
+  if (dist(p.x, p.y, og.x, og.y) < og.r + 60) {
+    drag.active = true;
+    drag.px = p.x; drag.py = p.y;
+    drag.vx = 0; drag.vy = 0;
+    if (!actx) { try{ actx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+  }
+}
+function onMove(x, y) {
+  if (!drag.active) return;
+  const p = toField(x, y);
+  // Smooth the finger velocity for a satisfying flick.
+  const nvx = p.x - drag.px, nvy = p.y - drag.py;
+  drag.vx = drag.vx * 0.5 + nvx * 0.5;
+  drag.vy = drag.vy * 0.5 + nvy * 0.5;
+  // Move OG toward finger (with a little easing so he feels weighty).
+  og.x += (p.x - og.x) * 0.55;
+  og.y += (p.y - og.y) * 0.55;
+  clampOG();
+  drag.px = p.x; drag.py = p.y;
+}
+function onUp() {
+  if (!drag.active) return;
+  drag.active = false;
+  // Flick: if OG has the ball and you let go while moving, shoot it!
+  if (og.hasBall) {
+    const speed = Math.hypot(drag.vx, drag.vy);
+    if (speed > 2) {
+      const power = Math.min(speed, 60);
+      ball.vx = drag.vx / speed * power * 1.4;
+      ball.vy = drag.vy / speed * power * 1.4;
+      og.hasBall = false;
+      sfx.kick();
+      spawnBurst(ball.x, ball.y, '#ffffff', 8);
+    }
+  }
+}
+
+// Pointer + touch events
+canvas.addEventListener('touchstart', e => { e.preventDefault(); const t=e.changedTouches[0]; onDown(t.clientX,t.clientY); }, {passive:false});
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); const t=e.changedTouches[0]; onMove(t.clientX,t.clientY); }, {passive:false});
+canvas.addEventListener('touchend',   e => { e.preventDefault(); onUp(); }, {passive:false});
+canvas.addEventListener('touchcancel',e => { e.preventDefault(); onUp(); }, {passive:false});
+canvas.addEventListener('mousedown', e => onDown(e.clientX, e.clientY));
+window.addEventListener('mousemove', e => onMove(e.clientX, e.clientY));
+window.addEventListener('mouseup',   () => onUp());
+
+// ----------------------------------------------------------------------------
+// Helpers
+// ----------------------------------------------------------------------------
+function dist(ax, ay, bx, by){ return Math.hypot(ax-bx, ay-by); }
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+function clampOG(){
+  og.x = clamp(og.x, og.r, W - og.r);
+  og.y = clamp(og.y, GOAL_Y + 40, H - og.r);
+}
+function spawnBurst(x, y, color, n){
+  for (let i=0;i<n;i++){
+    const a = Math.random()*Math.PI*2, s = 1+Math.random()*4;
+    game.particles.push({ x, y, vx:Math.cos(a)*s, vy:Math.sin(a)*s, life:1, color });
+  }
+}
+
+function goalBounds(){
+  const L = LEVELS[game.level];
+  return { x0: (W - L.goalW)/2, x1: (W + L.goalW)/2 };
+}
+
+// ----------------------------------------------------------------------------
+// Update loop
+// ----------------------------------------------------------------------------
+let lastT = performance.now();
+function update(dt) {
+  if (game.state !== 'playing') return;
+  const L = LEVELS[game.level];
+
+  // Timer
+  game.timeLeft -= dt;
+  if (game.timeLeft <= 0) { game.timeLeft = 0; endLevel(false); return; }
+
+  // --- Ball physics ---
+  if (og.hasBall) {
+    // Ball sits just in front of OG (toward last movement / toward goal).
+    let dirx = og.x - (W/2), diry = -1; // default aim up toward goal
+    const ang = Math.atan2(GOAL_Y - og.y, (W/2) - og.x);
+    ball.x = og.x + Math.cos(ang) * (og.r + ball.r + 4);
+    ball.y = og.y + Math.sin(ang) * (og.r + ball.r + 4);
+    ball.vx = ball.vy = 0;
+  } else {
+    ball.x += ball.vx;
+    ball.y += ball.vy;
+    ball.vx *= 0.985;  // friction
+    ball.vy *= 0.985;
+
+    // Walls
+    if (ball.x < ball.r){ ball.x = ball.r; ball.vx *= -0.7; sfx.bump(); }
+    if (ball.x > W-ball.r){ ball.x = W-ball.r; ball.vx *= -0.7; sfx.bump(); }
+    if (ball.y > H-ball.r){ ball.y = H-ball.r; ball.vy *= -0.7; sfx.bump(); }
+
+    // Top wall / goal check
+    if (ball.y < GOAL_Y + ball.r){
+      const g = goalBounds();
+      if (ball.x > g.x0 && ball.x < g.x1 && ball.vy < 0){
+        // GOAL!
+        scoreGoal();
+        return;
+      } else {
+        ball.y = GOAL_Y + ball.r; ball.vy *= -0.7; sfx.bump();
+      }
+    }
+
+    // OG can re-collect the ball when it's slow & nearby
+    if (dist(ball.x,ball.y,og.x,og.y) < og.r + ball.r + 6){
+      const sp = Math.hypot(ball.vx, ball.vy);
+      if (sp < 6) { og.hasBall = true; }
+      else {
+        // bounce off OG
+        const a = Math.atan2(ball.y-og.y, ball.x-og.x);
+        ball.vx = Math.cos(a)*sp*0.8; ball.vy = Math.sin(a)*sp*0.8;
+      }
+    }
+  }
+
+  // --- Monsters AI ---
+  for (const m of monsters) {
+    m.wob += dt * 6;
+    if (m.stunTime > 0) { m.stunTime -= dt; }
+    else {
+      // Chase the ball; if OG has the ball, chase OG to steal.
+      const tx = og.hasBall ? og.x : ball.x;
+      const ty = og.hasBall ? og.y : ball.y;
+      const a = Math.atan2(ty - m.y, tx - m.x);
+      const sp = L.speed * (0.7 + 0.3*Math.sin(m.wob));
+      m.vx += Math.cos(a) * sp * 0.12;
+      m.vy += Math.sin(a) * sp * 0.12;
+    }
+    m.vx *= 0.92; m.vy *= 0.92;
+    m.x += m.vx; m.y += m.vy;
+    // keep monsters in field
+    m.x = clamp(m.x, m.r, W - m.r);
+    m.y = clamp(m.y, GOAL_Y + m.r, H - m.r);
+
+    // Monster steals ball from OG
+    if (og.hasBall && dist(m.x,m.y,og.x,og.y) < og.r + m.r){
+      og.hasBall = false;
+      // ball knocked away from OG
+      const a = Math.atan2(og.y - m.y, og.x - m.x) + (Math.random()-0.5);
+      ball.vx = Math.cos(a)*9; ball.vy = Math.sin(a)*9;
+      ball.x = og.x + Math.cos(a)*(og.r+ball.r+2);
+      ball.y = og.y + Math.sin(a)*(og.r+ball.r+2);
+      m.stunTime = 0.5;
+      sfx.steal();
+      game.shake = 8;
+    }
+    // Monster kicks loose ball away (defense)
+    else if (!og.hasBall && dist(m.x,m.y,ball.x,ball.y) < m.r + ball.r + 2){
+      const a = Math.atan2(ball.y-m.y, ball.x-m.x);
+      const sp = Math.hypot(ball.vx,ball.vy);
+      ball.vx = Math.cos(a)*Math.max(sp,5)*1.05;
+      ball.vy = Math.sin(a)*Math.max(sp,5)*1.05;
+      m.stunTime = 0.3;
+      sfx.bump();
+    }
+
+    // OG body-checks little monsters out of the way (he's BIG)
+    const d = dist(m.x,m.y,og.x,og.y);
+    if (d < og.r + m.r){
+      const a = Math.atan2(m.y-og.y, m.x-og.x);
+      const push = (og.r + m.r) - d;
+      m.x += Math.cos(a)*push; m.y += Math.sin(a)*push;
+      m.vx += Math.cos(a)*2; m.vy += Math.sin(a)*2;
+    }
+  }
+
+  // Monster-monster soft separation so they don't stack
+  for (let i=0;i<monsters.length;i++) for (let j=i+1;j<monsters.length;j++){
+    const a=monsters[i], b=monsters[j];
+    const d=dist(a.x,a.y,b.x,b.y), min=a.r+b.r;
+    if (d>0 && d<min){
+      const ang=Math.atan2(b.y-a.y,b.x-a.x), p=(min-d)/2;
+      a.x-=Math.cos(ang)*p; a.y-=Math.sin(ang)*p;
+      b.x+=Math.cos(ang)*p; b.y+=Math.sin(ang)*p;
+    }
+  }
+
+  // Particles
+  for (const p of game.particles){ p.x+=p.vx; p.y+=p.vy; p.vy+=0.1; p.life-=dt*1.6; }
+  game.particles = game.particles.filter(p=>p.life>0);
+
+  if (game.shake>0) game.shake *= 0.85;
+  if (game.flash>0) game.flash -= dt*1.6;
+}
+
+function scoreGoal(){
+  game.score++;
+  sfx.goal();
+  game.flash = 1;
+  game.shake = 12;
+  spawnBurst(ball.x, ball.y, '#ffe14d', 26);
+  if (game.score >= game.target){ endLevel(true); return; }
+  // reset for next goal
+  og.x = W/2; og.y = H - 200; og.hasBall = false;
+  resetBall(true);
+  // nudge monsters back a bit
+  for (const m of monsters){ m.y = Math.max(m.y, 260); }
+}
+
+function endLevel(win){
+  game.state = win ? 'won' : 'lost';
+  if (win){
+    sfx.win();
+    if (game.level + 1 < LEVELS.length && game.unlocked < game.level + 2){
+      game.unlocked = game.level + 2; saveUnlocked();
+    }
+    if (game.level === LEVELS.length - 1){ game.unlocked = LEVELS.length; saveUnlocked(); }
+  }
+  showResult(win);
+}
+
+// ----------------------------------------------------------------------------
+// Rendering
+// ----------------------------------------------------------------------------
+function draw() {
+  ctx.save();
+  // screen shake
+  if (game.shake > 0.2){
+    ctx.translate((Math.random()-0.5)*game.shake, (Math.random()-0.5)*game.shake);
+  }
+
+  drawField();
+
+  // Particles behind characters? draw goal flash
+  if (game.state === 'playing' || game.state === 'won' || game.state === 'lost'){
+    drawGoal();
+    if (!og.hasBall) drawBall();
+    for (const m of monsters) drawMonster(m);
+    drawOG();
+    if (og.hasBall) drawBall();
+    drawParticles();
+    drawHUD();
+    drawAimHint();
+  }
+
+  if (game.flash > 0){
+    ctx.fillStyle = `rgba(255,255,120,${game.flash*0.35})`;
+    ctx.fillRect(0,0,W,H);
+  }
+  ctx.restore();
+}
+
+function drawField(){
+  // grass
+  ctx.fillStyle = '#1d9a3f';
+  ctx.fillRect(0,0,W,H);
+  // mow stripes
+  ctx.fillStyle = 'rgba(255,255,255,0.05)';
+  for (let i=0;i<H/60;i++){ if (i%2===0) ctx.fillRect(0,i*60,W,60); }
+  // border
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 5;
+  ctx.strokeRect(20, GOAL_Y, W-40, H-GOAL_Y-20);
+  // center circle
+  ctx.beginPath(); ctx.arc(W/2, H/2, 80, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(20,H/2); ctx.lineTo(W-20,H/2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(W/2,H/2,6,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,.6)'; ctx.fill();
+}
+
+function drawGoal(){
+  const g = goalBounds();
+  // goal net
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fillRect(g.x0, GOAL_Y-GOAL_DEPTH, g.x1-g.x0, GOAL_DEPTH);
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(g.x0, GOAL_Y); ctx.lineTo(g.x0, GOAL_Y-GOAL_DEPTH);
+  ctx.lineTo(g.x1, GOAL_Y-GOAL_DEPTH); ctx.lineTo(g.x1, GOAL_Y);
+  ctx.stroke();
+  // net mesh
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1.5;
+  for (let x=g.x0; x<=g.x1; x+=14){ ctx.beginPath(); ctx.moveTo(x,GOAL_Y-GOAL_DEPTH); ctx.lineTo(x,GOAL_Y); ctx.stroke(); }
+  for (let y=GOAL_Y-GOAL_DEPTH; y<=GOAL_Y; y+=12){ ctx.beginPath(); ctx.moveTo(g.x0,y); ctx.lineTo(g.x1,y); ctx.stroke(); }
+  ctx.restore();
+}
+
+function drawBall(){
+  ctx.save();
+  ctx.translate(ball.x, ball.y);
+  // shadow
+  ctx.fillStyle='rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(0, ball.r*0.7, ball.r, ball.r*0.4, 0,0,Math.PI*2); ctx.fill();
+  // ball
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(0,0,ball.r,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#222'; ctx.lineWidth=2; ctx.stroke();
+  // pentagons (simple)
+  ctx.fillStyle='#222';
+  const rot = (ball.x+ball.y)*0.02;
+  ctx.beginPath(); ctx.arc(0,0,ball.r*0.42,0,Math.PI*2); ctx.fill();
+  for (let i=0;i<5;i++){
+    const a = rot + i*(Math.PI*2/5);
+    ctx.beginPath(); ctx.arc(Math.cos(a)*ball.r*0.7, Math.sin(a)*ball.r*0.7, ball.r*0.16, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawOG(){
+  ctx.save();
+  ctx.translate(og.x, og.y);
+  const t = performance.now()/300;
+  const bob = Math.sin(t)*3;
+  // shadow
+  ctx.fillStyle='rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(0, og.r*0.85, og.r*0.95, og.r*0.4, 0,0,Math.PI*2); ctx.fill();
+
+  ctx.translate(0, bob);
+
+  // HORNS (big!)
+  ctx.fillStyle='#fff4d6'; ctx.strokeStyle='#d9b36b'; ctx.lineWidth=3;
+  for (const s of [-1,1]){
+    ctx.beginPath();
+    ctx.moveTo(s*og.r*0.55, -og.r*0.55);
+    ctx.quadraticCurveTo(s*og.r*1.05, -og.r*1.15, s*og.r*0.62, -og.r*1.35);
+    ctx.quadraticCurveTo(s*og.r*0.42, -og.r*0.85, s*og.r*0.3, -og.r*0.7);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+
+  // BODY (big blue)
+  const grad = ctx.createRadialGradient(-og.r*0.3,-og.r*0.3,og.r*0.2, 0,0,og.r*1.2);
+  grad.addColorStop(0,'#5cc6ff'); grad.addColorStop(1,'#1f6fd6');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(0,0,og.r,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#15498f'; ctx.lineWidth=4; ctx.stroke();
+
+  // tummy
+  ctx.fillStyle='rgba(255,255,255,0.18)';
+  ctx.beginPath(); ctx.ellipse(0, og.r*0.25, og.r*0.55, og.r*0.45, 0,0,Math.PI*2); ctx.fill();
+
+  // EYES (big friendly)
+  for (const s of [-1,1]){
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(s*og.r*0.32, -og.r*0.12, og.r*0.26, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='#16243a'; ctx.beginPath(); ctx.arc(s*og.r*0.36, -og.r*0.08, og.r*0.13, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(s*og.r*0.40, -og.r*0.13, og.r*0.05, 0, Math.PI*2); ctx.fill();
+  }
+  // smile
+  ctx.strokeStyle='#0c2a52'; ctx.lineWidth=4; ctx.beginPath();
+  ctx.arc(0, og.r*0.12, og.r*0.42, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
+  // little fangs
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.moveTo(-og.r*0.18,og.r*0.32); ctx.lineTo(-og.r*0.08,og.r*0.32); ctx.lineTo(-og.r*0.13,og.r*0.46); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(og.r*0.18,og.r*0.32); ctx.lineTo(og.r*0.08,og.r*0.32); ctx.lineTo(og.r*0.13,og.r*0.46); ctx.fill();
+
+  // name tag
+  ctx.fillStyle='#ffe14d'; ctx.font='bold 22px Arial'; ctx.textAlign='center';
+  ctx.strokeStyle='#7a5a00'; ctx.lineWidth=4;
+  ctx.strokeText('OG', 0, og.r*0.95+18); ctx.fillText('OG', 0, og.r*0.95+18);
+
+  ctx.restore();
+}
+
+function drawMonster(m){
+  ctx.save();
+  ctx.translate(m.x, m.y);
+  const color = LEVELS[game.level].monsterColor;
+  const wob = Math.sin(m.wob)*2;
+  // shadow
+  ctx.fillStyle='rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(0,m.r*0.85,m.r*0.9,m.r*0.35,0,0,Math.PI*2); ctx.fill();
+  ctx.translate(0, wob);
+  // little horns
+  ctx.fillStyle='#ffe9c2';
+  for (const s of [-1,1]){
+    ctx.beginPath(); ctx.moveTo(s*m.r*0.4,-m.r*0.5);
+    ctx.lineTo(s*m.r*0.7,-m.r*1.05); ctx.lineTo(s*m.r*0.15,-m.r*0.6); ctx.closePath(); ctx.fill();
+  }
+  // body
+  ctx.fillStyle = m.stunTime>0 ? '#ffd24d' : color;
+  ctx.beginPath(); ctx.arc(0,0,m.r,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,.3)'; ctx.lineWidth=2; ctx.stroke();
+  // eye(s)
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(0,-m.r*0.1,m.r*0.42,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#222'; ctx.beginPath(); ctx.arc(0,-m.r*0.05,m.r*0.2,0,Math.PI*2); ctx.fill();
+  // mouth
+  ctx.strokeStyle='#222'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(0,m.r*0.3,m.r*0.3, m.stunTime>0?Math.PI:0, m.stunTime>0?Math.PI*2:Math.PI); ctx.stroke();
+  ctx.restore();
+}
+
+function drawParticles(){
+  for (const p of game.particles){
+    ctx.globalAlpha = Math.max(0,p.life);
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x,p.y,4,0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawAimHint(){
+  // When OG has the ball, show a faint aim line toward the goal
+  if (game.state==='playing' && og.hasBall && drag.active){
+    const sp = Math.hypot(drag.vx, drag.vy);
+    if (sp > 1){
+      ctx.save();
+      ctx.strokeStyle='rgba(255,255,255,.5)'; ctx.lineWidth=4; ctx.setLineDash([10,10]);
+      ctx.beginPath(); ctx.moveTo(ball.x,ball.y);
+      ctx.lineTo(ball.x+drag.vx*6, ball.y+drag.vy*6); ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+function drawHUD(){
+  ctx.save();
+  // top bar
+  ctx.fillStyle='rgba(0,0,0,.35)';
+  ctx.fillRect(0,0,W,52);
+  ctx.fillStyle='#fff'; ctx.font='bold 26px Arial'; ctx.textAlign='left';
+  ctx.fillText(`⚽ ${game.score} / ${game.target}`, 18, 36);
+  // timer
+  ctx.textAlign='center';
+  const tcol = game.timeLeft<10 ? '#ff6b6b' : '#fff';
+  ctx.fillStyle = tcol;
+  ctx.fillText(`⏱ ${Math.ceil(game.timeLeft)}s`, W/2, 36);
+  // level
+  ctx.textAlign='right'; ctx.fillStyle='#ffe14d'; ctx.font='bold 22px Arial';
+  ctx.fillText(`Lv ${game.level+1}`, W-18, 35);
+  ctx.restore();
+}
+
+// ----------------------------------------------------------------------------
+// Main loop
+// ----------------------------------------------------------------------------
+function loop(now){
+  let dt = (now - lastT)/1000; lastT = now;
+  if (dt > 0.05) dt = 0.05; // clamp big frame gaps
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ----------------------------------------------------------------------------
+// Screen / menu management
+// ----------------------------------------------------------------------------
+const elMenu = document.getElementById('menu');
+const elLevelSelect = document.getElementById('levelSelect');
+const elResult = document.getElementById('result');
+const elLevelButtons = document.getElementById('levelButtons');
+
+function hideAllScreens(){ elMenu.classList.add('hidden'); elLevelSelect.classList.add('hidden'); elResult.classList.add('hidden'); }
+function showMenu(){ game.state='menu'; hideAllScreens(); elMenu.classList.remove('hidden'); }
+function showLevelSelect(){
+  game.state='menu'; hideAllScreens(); elLevelSelect.classList.remove('hidden');
+  buildLevelButtons();
+}
+function buildLevelButtons(){
+  elLevelButtons.innerHTML='';
+  LEVELS.forEach((L,i)=>{
+    const b=document.createElement('button');
+    const locked = i+1 > game.unlocked;
+    b.className='levelBtn'+(locked?' locked':'');
+    b.innerHTML = `<span class="num">${locked?'🔒':(i+1)}</span><span class="lbl">${L.name}</span>`;
+    if (!locked) b.onclick = ()=> startLevel(i);
+    elLevelButtons.appendChild(b);
+  });
+}
+function showResult(win){
+  hideAllScreens();
+  const title = document.getElementById('resultTitle');
+  const text = document.getElementById('resultText');
+  const nextBtn = document.getElementById('nextBtn');
+  if (win){
+    title.textContent = '🎉 YOU WIN!';
+    if (game.level+1 < LEVELS.length){
+      text.innerHTML = `OG scored <b>${game.score}</b> goals and beat <b>${LEVELS[game.level].name}</b>!<br>Next level unlocked!`;
+      nextBtn.classList.remove('hidden');
+    } else {
+      text.innerHTML = `🏆 CHAMPION! OG smashed all 3 levels!<br>You beat every little monster team!`;
+      nextBtn.classList.add('hidden');
+    }
+  } else {
+    title.textContent = '⏱ TIME UP!';
+    text.innerHTML = `OG scored <b>${game.score}</b> of <b>${game.target}</b> goals.<br>So close — give it another go!`;
+    nextBtn.classList.add('hidden');
+  }
+  elResult.classList.remove('hidden');
+}
+
+// Buttons
+document.getElementById('playBtn').onclick = () => { if(!actx){try{actx=new(window.AudioContext||window.webkitAudioContext)();}catch(e){}} showLevelSelect(); };
+document.getElementById('backBtn').onclick = showMenu;
+document.getElementById('menuBtn').onclick = showLevelSelect;
+document.getElementById('retryBtn').onclick = () => startLevel(game.level);
+document.getElementById('nextBtn').onclick = () => startLevel(Math.min(game.level+1, LEVELS.length-1));
+
+// Start on menu
+showMenu();
+
+})();
+</script>
+</body>
+</html>
